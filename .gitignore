@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Log e file temporanei
+*.log
+.DS_Store
+
+# File specifici dell'IDE (es. VS Code)
+.vscode/
+
+# Ambiente virtuale
+venv/
+
+# Dataset
+data/
