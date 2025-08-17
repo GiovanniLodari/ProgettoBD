@@ -1,6 +1,7 @@
 streamlit
 pandas 
-pyspark 
+pyspark==3.5.0
 plotly 
 seaborn 
 matplotlib
+setuptools
