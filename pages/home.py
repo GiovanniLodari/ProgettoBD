@@ -1,695 +1,870 @@
 """
-Analizzatore Disastri Naturali - Multi-Dataset
+Analizzatore Disastri Naturali con Spark Integration
+Versione ottimizzata per dataset di grandi dimensioni
 """
 
 import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 import numpy as np
-from datetime import datetime, timedelta
+from datetime import datetime
 import io
-import os
-import gzip
-import json
 import tempfile
 import shutil
+import logging
+import sys
+import traceback
+
+# Import delle utilities Spark (presumendo che esistano i file src/spark_manager.py e src/analytics.py)
+from src.spark_manager import SparkManager, should_use_spark, get_file_size_mb, detect_data_schema
+from src.data_loader import DataLoader, FileHandler 
+from src.analytics import DisasterAnalytics
+
+# --- Configurazione del Logger ---
+# Il logger è configurato per scrivere su console (per Streamlit) e su un file
+logging.basicConfig(
+    level=logging.DEBUG,  # Imposta il livello di log minimo a DEBUG per catturare tutto
+    format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler("app.log", mode="w", encoding="utf-8")
+    ]
+)
+logger = logging.getLogger(__name__)
+logger.info("Configurazione del logger completata. Livello di log impostato su DEBUG.")
 
 # Configurazione pagina
 st.set_page_config(
-    page_title="Disaster Analytics",
+    page_title="Disaster Analytics - Spark Edition",
     page_icon="🌪️",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
 
-# CSS minimalista
+# CSS ottimizzato
 st.markdown("""
 <style>
     .stApp > header {visibility: hidden;}
-    .stDeployButton {visibility: hidden;}
     .main .block-container {padding-top: 1rem;}
-    .metric-container {
+    .engine-indicator {
+        background: linear-gradient(90deg, #ff6b6b, #4ecdc4);
+        color: white;
+        padding: 0.5rem 1rem;
+        border-radius: 20px;
+        font-weight: bold;
+        display: inline-block;
+        margin: 0.5rem 0;
+    }
+    .performance-metrics {
         background: #f8f9fa;
         padding: 1rem;
         border-radius: 8px;
-        border: 1px solid #e9ecef;
-    }
-    .stTabs [data-baseweb="tab"] {
-        height: 40px;
-        padding: 8px 16px;
-    }
-    .upload-section {
-        background: #f8f9fa;
-        padding: 1rem;
-        border-radius: 8px;
-        margin-bottom: 1rem;
+        border-left: 4px solid #4ecdc4;
     }
 </style>
 """, unsafe_allow_html=True)
 
 def load_sample_data():
-    """Genera dati di esempio per il demo"""
+    """Genera dati di esempio più grandi per testare Spark"""
+    logger.info("Generazione di dati di esempio in corso...")
     np.random.seed(42)
     
-    disaster_types = ['Earthquake', 'Flood', 'Hurricane', 'Wildfire', 'Tornado', 'Tsunami']
-    countries = ['Italy', 'USA', 'Japan', 'Australia', 'Germany', 'Brazil', 'India', 'China']
+    disaster_types = ['Earthquake', 'Flood', 'Hurricane', 'Wildfire', 'Tornado', 'Tsunami', 'Drought', 'Avalanche']
+    countries = ['Italy', 'USA', 'Japan', 'Australia', 'Germany', 'Brazil', 'India', 'China', 'Mexico', 'Turkey']
     
-    n_records = 1000
+    n_records = 50000
     
     data = {
         'disaster_id': range(1, n_records + 1),
         'type': np.random.choice(disaster_types, n_records),
         'country': np.random.choice(countries, n_records),
-        'date': pd.date_range('2020-01-01', '2023-12-31', periods=n_records),
+        'date': pd.date_range('2015-01-01', '2024-12-31', periods=n_records),
         'magnitude': np.random.uniform(1, 9, n_records).round(1),
         'casualties': np.random.poisson(50, n_records),
         'economic_loss': np.random.lognormal(15, 2, n_records).astype(int),
-        'duration_days': np.random.exponential(5, n_records).astype(int) + 1
+        'duration_days': np.random.exponential(5, n_records).astype(int) + 1,
+        'affected_population': np.random.exponential(10000, n_records).astype(int),
+        'recovery_time_months': np.random.gamma(2, 3, n_records).round().astype(int)
     }
     
-    return pd.DataFrame(data)
+    df = pd.DataFrame(data)
+    logger.info(f"Generazione dati di esempio completata. Creato un DataFrame di {len(df):,} record.")
+    return df
 
-def convert_json_gz_to_parquet(uploaded_file, temp_dir):
-    """Converte file JSON/JSON.GZ in Parquet per ottimizzazione"""
-    try:
-        # Leggi contenuto file
-        content = uploaded_file.read()
-        if uploaded_file.name.endswith('.gz'):
-            content = gzip.decompress(content)
-
-        df = None
-
-        # 1. Prova come NDJSON (ogni riga un JSON)
-        try:
-            df = pd.read_json(io.BytesIO(content), lines=True)
-        except Exception:
-            # 2. Fallback: singolo JSON standard
-            json_data = json.loads(content.decode('utf-8'))
-
-            # Se è lista → DataFrame diretto
-            if isinstance(json_data, list):
-                df = pd.DataFrame(json_data)
-
-            if isinstance(json_data, list):
-                df = pd.DataFrame(json_data)
-            elif isinstance(json_data, dict):
-                try:
-                    df = pd.json_normalize(json_data)
-                except Exception:
-                    df = pd.DataFrame([json_data])
-            else:
-                raise ValueError("Formato JSON non supportato")
-
-        # 3. Fix colonne problematiche (dict/list → stringa)
-        for col in df.columns:
-            if df[col].apply(lambda x: isinstance(x, (dict, list))).any():
-                df[col] = df[col].astype(str)
-
-        # 4. Salva come parquet temporaneo
-        parquet_name = uploaded_file.name.replace('.json.gz', '.parquet').replace('.json', '.parquet')
-        parquet_path = os.path.join(temp_dir, parquet_name)
-        df.to_parquet(parquet_path, index=False)
-
-        return df, parquet_path, parquet_name
-
-    except Exception as e:
-        raise Exception(f"Errore conversione {uploaded_file.name}: {str(e)}")
-
+def display_engine_info(engine_type, file_info=None, performance_info=None):
+    """Mostra informazioni sul motore di elaborazione utilizzato"""
+    logger.debug(f"Visualizzazione informazioni motore: {engine_type}")
+    
+    if engine_type == "spark":
+        st.markdown('<div class="engine-indicator">⚡ Spark Engine Active</div>', unsafe_allow_html=True)
+        logger.info("Spark Engine in uso.")
         
-    except Exception as e:
-        raise Exception(f"Errore conversione {uploaded_file.name}: {str(e)}")
+        if performance_info:
+            logger.debug(f"Visualizzazione metriche performance Spark: {performance_info}")
+            with st.container():
+                st.markdown('<div class="performance-metrics">', unsafe_allow_html=True)
+                col1, col2, col3, col4 = st.columns(4)
+                
+                with col1:
+                    st.metric("Cores Used", performance_info.get('cores', 'N/A'))
+                with col2:
+                    st.metric("Memory Allocated", performance_info.get('memory', 'N/A'))
+                with col3:
+                    st.metric("Processing Mode", "Distributed")
+                with col4:
+                    st.metric("Engine", "Apache Spark")
+                
+                st.markdown('</div>', unsafe_allow_html=True)
+    else:
+        st.markdown('<div style="background: #ffd93d; color: #333; padding: 0.5rem 1rem; border-radius: 20px; display: inline-block;">🐼 Pandas Engine (Small Data)</div>', unsafe_allow_html=True)
+        logger.info("Pandas Engine in uso.")
 
-def load_multiple_files(uploaded_files):
-    """Carica e combina multiple file con supporto JSON.GZ"""
-    all_dataframes = []
-    load_info = []
-    conversion_info = []
-    
-    # Crea directory temporanea per parquet
-    temp_dir = tempfile.mkdtemp()
-    
-    total_files = len(uploaded_files)
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    
-    for idx, uploaded_file in enumerate(uploaded_files):
-        try:
-            status_text.text(f"Processing {uploaded_file.name} ({idx+1}/{total_files})")
-            progress_bar.progress((idx + 1) / total_files)
-            
-            original_size = uploaded_file.size
-            df = None
-            parquet_path = None
-            converted = False
-            
-            # Reset file pointer
-            uploaded_file.seek(0)
-            
-            if uploaded_file.name.endswith('.json.gz') or uploaded_file.name.endswith('.json'):
-                # Converti JSON/JSON.GZ in Parquet
-                df, parquet_path, parquet_name = convert_json_gz_to_parquet(uploaded_file, temp_dir)
-                converted = True
-                
-                # Info conversione
-                parquet_size = os.path.getsize(parquet_path)
-                compression_ratio = (1 - parquet_size / original_size) * 100
-                
-                conversion_info.append({
-                    'original_file': uploaded_file.name,
-                    'parquet_file': parquet_name,
-                    'original_size_mb': original_size / 1024 / 1024,
-                    'parquet_size_mb': parquet_size / 1024 / 1024,
-                    'compression_ratio': compression_ratio
-                })
-                
-            elif uploaded_file.name.endswith('.csv'):
-                df = pd.read_csv(uploaded_file)
-            elif uploaded_file.name.endswith('.parquet'):
-                df = pd.read_parquet(uploaded_file)
-            else:
-                st.warning(f"Formato non supportato: {uploaded_file.name}")
-                continue
-            
-            if df is not None:
-                # Aggiungi colonna source per tracciare origine
-                df['source_file'] = uploaded_file.name
-                df['source_id'] = idx + 1
-                
-                all_dataframes.append(df)
-                load_info.append({
-                    'file': uploaded_file.name,
-                    'rows': len(df),
-                    'columns': len(df.columns),
-                    'size_mb': original_size / 1024 / 1024,
-                    'converted': converted,
-                    'parquet_path': parquet_path
-                })
-                
-        except Exception as e:
-            st.error(f"Error loading {uploaded_file.name}: {str(e)}")
-    
-    # Clear progress
-    progress_bar.empty()
-    status_text.empty()
-    
-    # Store temp directory in session state for cleanup
-    st.session_state.temp_dir = temp_dir
-    st.session_state.conversion_info = conversion_info
-    
-    return all_dataframes, load_info
-
-def create_overview_metrics(df, load_info=None):
-    """Crea metriche di overview"""
+def create_overview_metrics_spark(df_or_spark, is_spark=False, load_info=None):
+    """Metriche overview ottimizzate per Spark"""
+    logger.info("Calcolo delle metriche di overview.")
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        st.metric("Total Events", f"{len(df):,}")
+        if is_spark:
+            logger.debug("Conteggio eventi totali con Spark.")
+            total_events = df_or_spark.count()
+        else:
+            logger.debug("Conteggio eventi totali con Pandas.")
+            total_events = len(df_or_spark)
+        
+        st.metric("Total Events", f"{total_events:,}")
         if load_info:
             st.caption(f"From {len(load_info)} files")
     
     with col2:
-        if 'casualties' in df.columns:
-            avg_casualties = df['casualties'].mean()
-            st.metric("Avg Casualties", f"{avg_casualties:.0f}")
+        if is_spark:
+            if 'casualties' in df_or_spark.columns:
+                logger.debug("Calcolo 'Avg Casualties' con Spark.")
+                from pyspark.sql.functions import avg
+                avg_casualties = df_or_spark.agg(avg('casualties')).collect()[0][0]
+                st.metric("Avg Casualties", f"{avg_casualties:.0f}" if avg_casualties else "N/A")
+            else:
+                logger.warning("Colonna 'casualties' non trovata in Spark DataFrame.")
+                st.metric("Datasets", f"{df_or_spark.select('source_id').distinct().count()}")
         else:
-            st.metric("Datasets", f"{df['source_id'].nunique() if 'source_id' in df.columns else 1}")
+            if 'casualties' in df_or_spark.columns:
+                logger.debug("Calcolo 'Avg Casualties' con Pandas.")
+                avg_casualties = df_or_spark['casualties'].mean()
+                st.metric("Avg Casualties", f"{avg_casualties:.0f}")
+            else:
+                logger.warning("Colonna 'casualties' non trovata in Pandas DataFrame.")
+                st.metric("Datasets", f"{df_or_spark['source_id'].nunique() if 'source_id' in df_or_spark.columns else 1}")
     
     with col3:
-        if 'economic_loss' in df.columns:
-            total_loss = df['economic_loss'].sum() / 1e9
+        if is_spark and 'economic_loss' in df_or_spark.columns:
+            logger.debug("Calcolo 'Total Loss' con Spark.")
+            from pyspark.sql.functions import sum as spark_sum
+            total_loss = df_or_spark.agg(spark_sum('economic_loss')).collect()[0][0]
+            if total_loss:
+                st.metric("Total Loss", f"${total_loss/1e9:.1f}B")
+            else:
+                logger.warning("Valore 'Total Loss' nullo.")
+                st.metric("Total Loss", "N/A")
+        elif not is_spark and 'economic_loss' in df_or_spark.columns:
+            logger.debug("Calcolo 'Total Loss' con Pandas.")
+            total_loss = df_or_spark['economic_loss'].sum() / 1e9
             st.metric("Total Loss", f"${total_loss:.1f}B")
         else:
-            st.metric("Columns", f"{len(df.columns)}")
+            logger.warning("Colonna 'economic_loss' non trovata.")
+            st.metric("Columns", f"{len(df_or_spark.columns)}")
     
     with col4:
-        if 'date' in df.columns:
-            date_range = (df['date'].max() - df['date'].min()).days
+        if is_spark and 'date' in df_or_spark.columns:
+            logger.debug("Calcolo 'Period' con Spark.")
+            from pyspark.sql.functions import max, min, datediff
+            date_stats = df_or_spark.agg(max('date').alias('max_date'), min('date').alias('min_date')).collect()[0]
+            if date_stats['max_date'] and date_stats['min_date']:
+                date_range = (date_stats['max_date'] - date_stats['min_date']).days
+                st.metric("Period (days)", f"{date_range:,}")
+            else:
+                logger.warning("Valori di data nulli o mancanti.")
+                st.metric("Period", "N/A")
+        elif not is_spark and 'date' in df_or_spark.columns:
+            logger.debug("Calcolo 'Period' con Pandas.")
+            date_range = (df_or_spark['date'].max() - df_or_spark['date'].min()).days
             st.metric("Period (days)", f"{date_range:,}")
         else:
-            st.metric("Total Rows", f"{len(df):,}")
+            logger.warning("Colonna 'date' non trovata.")
+            st.metric("Total Rows", f"{total_events:,}")
+    logger.info("Calcolo metriche di overview completato.")
 
-def create_disaster_distribution(df):
-    """Grafico distribuzione per tipo"""
-    if 'type' not in df.columns:
-        # Trova colonna più probabile per tipo disastro
-        type_cols = [col for col in df.columns if 'type' in col.lower() or 'disaster' in col.lower()]
-        if not type_cols:
-            return None
-        type_col = type_cols[0]
-    else:
-        type_col = 'type'
-    
-    type_counts = df[type_col].value_counts()
-    
-    fig = px.bar(
-        x=type_counts.values,
-        y=type_counts.index,
-        orientation='h',
-        title=f"Events by {type_col}",
-        color=type_counts.values,
-        color_continuous_scale="viridis"
-    )
-    fig.update_layout(
-        height=400,
-        showlegend=False,
-        xaxis_title="Count",
-        yaxis_title=type_col.title()
-    )
-    return fig
+def create_charts_from_spark(spark_df):
+    """Crea grafici ottimizzati usando aggregazioni Spark"""
+    logger.info("Avvio della creazione dei grafici con Spark.")
+    charts = {}
 
-def create_temporal_trend(df):
-    """Grafico trend temporale"""
-    # Trova colonna data
-    date_cols = [col for col in df.columns if any(keyword in col.lower() 
-                 for keyword in ['date', 'time', 'year', 'occurred'])]
-    
-    if not date_cols:
-        return None
-    
-    date_col = date_cols[0]
-    
-    try:
-        # Converti in datetime se non lo è già
-        if df[date_col].dtype == 'object':
-            df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
-        
-        # Raggruppa per mese
-        df['year_month'] = df[date_col].dt.to_period('M')
-        monthly_counts = df.groupby('year_month').size().reset_index(name='count')
-        monthly_counts['date'] = monthly_counts['year_month'].dt.to_timestamp()
-        
-        fig = px.line(
-            monthly_counts,
-            x='date',
-            y='count',
-            title="Temporal Trend",
-            markers=True
-        )
-        fig.update_layout(
-            height=400,
-            xaxis_title="Date",
-            yaxis_title="Number of Events"
-        )
-        return fig
-    except:
-        return None
+    analytics = DisasterAnalytics(spark_df)
 
-def create_geographical_distribution(df):
-    """Grafico distribuzione geografica"""
-    # Trova colonna paese/regione
-    geo_cols = [col for col in df.columns if any(keyword in col.lower() 
-                for keyword in ['country', 'nation', 'region', 'location'])]
-    
-    if not geo_cols:
-        return None
-    
-    geo_col = geo_cols[0]
-    country_counts = df[geo_col].value_counts().head(10)
-    
-    fig = px.bar(
-        x=country_counts.values,
-        y=country_counts.index,
-        orientation='h',
-        title=f"Top 10 {geo_col.title()}",
-        color=country_counts.values,
-        color_continuous_scale="plasma"
-    )
-    fig.update_layout(
-        height=400,
-        showlegend=False,
-        xaxis_title="Count",
-        yaxis_title=geo_col.title()
-    )
-    return fig
+    # 1. Distribuzione per tipo
+    if 'type' in spark_df.columns:
+        logger.debug("Analisi della distribuzione per tipo di disastro.")
+        type_counts = analytics.analyze_by_disaster_type()
 
-def create_files_distribution(df):
-    """Distribuzione per file sorgente"""
-    if 'source_file' not in df.columns:
-        return None
-    
-    file_counts = df['source_file'].value_counts()
-    
-    fig = px.pie(
-        values=file_counts.values,
-        names=file_counts.index,
-        title="Events by Source File"
-    )
-    fig.update_layout(height=400)
-    return fig
-
-def perform_custom_aggregation(df, group_by, agg_col, agg_func):
-    """Aggregazione personalizzata"""
-    try:
-        if agg_func == 'count':
-            result = df.groupby(group_by).size().reset_index(name='count')
+        if type_counts is not None and not type_counts.empty:
+            logger.debug("Dati per il grafico 'type_distribution' pronti.")
+            fig = px.bar(
+                type_counts.head(10),
+                x='count',
+                y='type',
+                orientation='h',
+                title="Top 10 Events by Type",
+                color='count',
+                color_continuous_scale="viridis"
+            )
+            fig.update_layout(height=400, yaxis={'categoryorder':'total ascending'})
+            charts['type_distribution'] = fig
+            logger.debug("Grafico 'type_distribution' creato con successo.")
         else:
-            result = df.groupby(group_by)[agg_col].agg(agg_func).reset_index()
-        
-        # Ordina per valore decrescente
-        sort_col = result.columns[-1]
-        result = result.sort_values(sort_col, ascending=False).head(20)
-        return result
-    except Exception as e:
-        st.error(f"Aggregation error: {str(e)}")
-        return None
+            logger.warning("Nessun dato valido per il grafico di distribuzione per tipo.")
 
-def cleanup_temp_files():
-    """Pulizia file temporanei"""
-    if hasattr(st.session_state, 'temp_dir') and st.session_state.temp_dir:
-        try:
-            shutil.rmtree(st.session_state.temp_dir)
-            st.session_state.temp_dir = None
-        except:
-            pass
+    # 2. Distribuzione geografica per paese
+    if 'country' in spark_df.columns:
+        logger.debug("Analisi della distribuzione geografica.")
+        country_counts = analytics.analyze_geographical_distribution()
+        if country_counts is not None and not country_counts.empty:
+            logger.debug("Dati per il grafico 'country_distribution' pronti.")
+            fig = px.choropleth(
+                country_counts,
+                locations='country',
+                locationmode='country names',
+                color='disaster_count',
+                hover_name='country',
+                color_continuous_scale=px.colors.sequential.Plasma,
+                title="Disaster Events by Country"
+            )
+            charts['country_distribution'] = fig
+            logger.debug("Grafico 'country_distribution' creato con successo.")
+        else:
+            logger.warning("Nessun dato valido per il grafico di distribuzione geografica.")
+
+    # 3. Trend temporale
+    if 'date' in spark_df.columns:
+        logger.debug("Analisi del trend temporale.")
+        temporal_trends_df = analytics.analyze_temporal_trends()
+        if temporal_trends_df is not None and not temporal_trends_df.empty:
+            logger.debug("Dati per il grafico 'temporal_trend' pronti.")
+            fig = px.line(
+                temporal_trends_df,
+                x='year',
+                y='disaster_count',
+                title="Temporal Trend of Disasters"
+            )
+            fig.update_layout(height=400)
+            charts['temporal_trend'] = fig
+            logger.debug("Grafico 'temporal_trend' creato con successo.")
+        else:
+            logger.warning("Nessun dato valido per il grafico del trend temporale.")
+
+    # 4. Distribuzione del costo economico
+    if 'economic_loss' in spark_df.columns:
+        logger.debug("Analisi della distribuzione del costo economico.")
+        economic_loss_summary = spark_df.select('economic_loss').toPandas()
+        if not economic_loss_summary.empty:
+            logger.debug("Dati per il grafico 'economic_loss_distribution' pronti.")
+            fig = px.histogram(
+                economic_loss_summary,
+                x='economic_loss',
+                title="Distribution of Economic Loss",
+                color_discrete_sequence=['#4ecdc4']
+            )
+            fig.update_layout(bargap=0.2, height=400)
+            charts['economic_loss_distribution'] = fig
+            logger.debug("Grafico 'economic_loss_distribution' creato con successo.")
+        else:
+            logger.warning("Nessun dato valido per il grafico di distribuzione dei costi economici.")
+            
+    logger.info("Creazione grafici completata.")
+    return charts
 
 def main():
-    """Applicazione principale"""
-    
-    # Cleanup on app restart
-    if 'app_initialized' not in st.session_state:
-        cleanup_temp_files()
-        st.session_state.app_initialized = True
-    
+    """Applicazione principale con supporto Spark"""
+    logger.info("Avvio funzione main dell'applicazione Streamlit.")
+
+    try:
+        # Inizializza Spark Manager
+        if 'spark_manager' not in st.session_state:
+            st.session_state.spark_manager = SparkManager()
+            logger.debug("Inizializzato SparkManager in session_state.")
+        else:
+            logger.debug("SparkManager già presente in session_state.")
+    except Exception as e:
+        logger.critical(f"Inizializzazione di SparkManager fallita: {e}", exc_info=True)
+        st.error(f"Errore critico con Spark. L'applicazione non può continuare. Dettagli: {e}")
+        st.stop()
+
+
     # Header
-    st.title("🌪️ Disaster Analytics - Multi Dataset")
+    st.title("🌪️ Disaster Analytics - Spark Edition")
+    st.markdown("**High-Performance Multi-Dataset Analysis**")
     
     # Inizializza session state
     if 'datasets_loaded' not in st.session_state:
+        logger.info("Inizializzazione dello stato della sessione.")
         st.session_state.datasets_loaded = False
-        st.session_state.combined_df = None
+        st.session_state.data = None
         st.session_state.load_info = None
+        st.session_state.is_spark = False
+        st.session_state.performance_info = None
+
+    logger.debug("Hola.")
     
     # Upload section
     with st.container():
-        st.markdown('<div class="upload-section">', unsafe_allow_html=True)
-        
         col1, col2 = st.columns([3, 1])
         
         with col1:
             uploaded_files = st.file_uploader(
-                "Upload multiple datasets (CSV, JSON, JSON.GZ, Parquet)",
+                "Upload datasets (CSV, JSON, JSON.GZ, Parquet) - Auto-optimized with Spark for large files",
                 type=['csv', 'json', 'gz', 'parquet'],
                 accept_multiple_files=True,
-                help="JSON.GZ files will be automatically converted to Parquet for better performance"
+                help="Files >100MB or multiple files will automatically use Spark for processing"
             )
         
         with col2:
             use_sample = st.checkbox("Use sample data", value=not uploaded_files)
-            if st.button("🔄 Reset", help="Clear all loaded data"):
-                cleanup_temp_files()
-                st.session_state.datasets_loaded = False
-                st.session_state.combined_df = None
-                st.session_state.load_info = None
+            if st.button("🔄 Reset"):
+                logger.info("Bottone 'Reset' premuto. Resetting session state.")
+                
+                if 'spark_manager' in st.session_state:
+                    logger.debug("Pulizia della sessione Spark in corso.")
+                    st.session_state.spark_manager.cleanup()
+                
+                for key in ['datasets_loaded', 'data', 'load_info', 'is_spark', 'performance_info']:
+                    if key in st.session_state:
+                        del st.session_state[key]
+                        logger.debug(f"Chiave '{key}' rimossa da session_state.")
+                
                 st.rerun()
-        
-        st.markdown('</div>', unsafe_allow_html=True)
     
-    # Process files
+    # Mostra decisione engine
+    if uploaded_files:
+        total_size_mb = get_file_size_mb(uploaded_files)
+        will_use_spark = should_use_spark(total_size_mb, len(uploaded_files))
+        logger.info(f"Caricati {len(uploaded_files)} file, totale {total_size_mb:.1f}MB. "
+                    f"Decisione engine: {'Spark' if will_use_spark else 'Pandas'}")
+
+        if will_use_spark:
+            st.info(f"🚀 **Auto-optimization**: {total_size_mb:.1f}MB across {len(uploaded_files)} files → **Spark Engine** will be used")
+        else:
+            st.info(f"🐼 **Small dataset**: {total_size_mb:.1f}MB → **Pandas Engine** will be used")
+    
+    # Process data
     if uploaded_files or use_sample:
         if uploaded_files and not st.session_state.datasets_loaded:
-            with st.spinner(f"Loading {len(uploaded_files)} files..."):
-                dataframes, load_info = load_multiple_files(uploaded_files)
+            logger.info("Avvio del processo di caricamento dei file.")
+            total_size_mb = get_file_size_mb(uploaded_files)
+            use_spark = should_use_spark(total_size_mb, len(uploaded_files))
+            logger.debug(f"Processo file uploadati con {'Spark' if use_spark else 'Pandas'}.")
+            
+            with st.spinner(f"Loading {len(uploaded_files)} files with {'Spark' if use_spark else 'Pandas'}..."):
+                if use_spark:
+                    try:
+                        # 1. Il blocco 'try' contiene SOLO le operazioni rischiose
+                        logger.info("Tentativo di inizializzazione della sessione Spark.")
+                        spark = st.session_state.spark_manager.get_spark_session(total_size_mb)
+
+                        # Se la sessione non parte, solleva un errore per andare all'except
+                        if not spark:
+                            raise RuntimeError("La sessione Spark non è stata inizializzata correttamente (restituito None).")
+
+                        logger.info("Sessione Spark OK. Lettura dei file in corso.")
+                        #combined_data, load_info = st.session_state.spark_manager.read_files_with_spark(uploaded_files)
+                        st.session_state.data_loader = DataLoader(spark)
+
+                        temp_paths = []
+                        for uploaded_file in uploaded_files:
+                            path = FileHandler.handle_uploaded_file(uploaded_file)
+                            if path:
+                                temp_paths.append(path)
+
+                        combined_data = st.session_state.data_loader.load_multiple_files(
+                            file_paths=temp_paths,
+                            schema_type='twitter'
+                        )
+
+                    except Exception as e:
+                        # 2. Il blocco 'except' gestisce QUALSIASI fallimento avvenuto nel 'try'
+                        logger.error(f"Caricamento con Spark fallito. Errore: {e}", exc_info=True)
+                        st.error(f"❌ Caricamento con Spark fallito. L'app tenterà di continuare con Pandas.")
+                        st.info("Controlla il file app.log per i dettagli tecnici dell'errore.")
+                        # La variabile rimane False
+
+                    else:
+                        # 3. Il blocco 'else' viene eseguito SOLO SE il 'try' ha avuto successo
+                        logger.info(f"Dati caricati con Spark. Totale record: {combined_data.count()}.")
+                        st.session_state.data = combined_data
+                        #st.session_state.load_info = load_info
+                        st.session_state.is_spark = True
+                        st.session_state.datasets_loaded = True
+                        st.session_state.performance_info = {
+                            'cores': spark.sparkContext.defaultParallelism,
+                            'memory': "Dynamic",
+                            'engine': 'Apache Spark'
+                        }
+                        st.success(f"✅ Loaded with Spark: {combined_data.count():,} records from {len(uploaded_files)} files")
+                        spark_successful = True # Imposta il flag di successo
                 
-                if dataframes:
-                    # Combina tutti i dataframe
-                    combined_df = pd.concat(dataframes, ignore_index=True, sort=False)
-                    
-                    st.session_state.combined_df = combined_df
+                if not use_spark:
+                    logger.info("Caricamento con Pandas in corso.")
+                    # Fallback a Pandas (codice originale semplificato)
+                    all_dfs = []
+                    load_info = []
+                    for file in uploaded_files:
+                        df = pd.read_csv(file) # Esempio semplificato
+                        all_dfs.append(df)
+                        load_info.append({'name': file.name, 'size_mb': file.size / 1024 / 1024, 'rows': len(df)})
+                    combined_data = pd.concat(all_dfs, ignore_index=True)
+                    st.session_state.data = combined_data
                     st.session_state.load_info = load_info
+                    st.session_state.is_spark = False
                     st.session_state.datasets_loaded = True
-                    
-                    # Info caricamento
-                    total_rows = sum(info['rows'] for info in load_info)
-                    total_size = sum(info['size_mb'] for info in load_info)
-                    
-                    st.success(f"✅ Loaded {len(load_info)} files: {total_rows:,} total records ({total_size:.1f} MB)")
-                    
-                    # Mostra info conversioni se presenti
-                    if hasattr(st.session_state, 'conversion_info') and st.session_state.conversion_info:
-                        with st.expander("🔄 JSON.GZ → Parquet Conversion Details"):
-                            conv_df = pd.DataFrame(st.session_state.conversion_info)
-                            conv_df['compression_ratio'] = conv_df['compression_ratio'].round(1)
-                            st.dataframe(conv_df, use_container_width=True)
-                            
-                            avg_compression = conv_df['compression_ratio'].mean()
-                            st.success(f"Average compression: {avg_compression:.1f}% size reduction")
+                    logger.info(f"Dati caricati con Pandas. Totale record: {len(combined_data):,}.")
+                    st.success(f"✅ Loaded with Pandas: {len(combined_data):,} records from {len(load_info)} files")
         
         elif use_sample and not st.session_state.datasets_loaded:
-            st.session_state.combined_df = load_sample_data()
+            logger.info("Opzione 'Use sample data' selezionata. Generazione dati.")
+            sample_data = load_sample_data()
+            
+            sample_size_mb = sample_data.memory_usage(deep=True).sum() / 1024 / 1024
+            
+            if sample_size_mb > 50:
+                logger.info(f"Dimensioni sample ({sample_size_mb:.2f}MB) sufficienti per usare Spark.")
+                spark = st.session_state.spark_manager.get_spark_session(sample_size_mb)
+                if spark:
+                    spark_df = spark.createDataFrame(sample_data)
+                    st.session_state.data = spark_df
+                    st.session_state.is_spark = True
+                    st.session_state.performance_info = {
+                        'cores': spark.sparkContext.defaultParallelism,
+                        'memory': "1GB",
+                        'engine': 'Apache Spark'
+                    }
+                    logger.info("Convertito Pandas DataFrame in Spark DataFrame per analisi.")
+                else:
+                    logger.warning("Inizializzazione Spark fallita per dati di esempio. Rimane in Pandas.")
+                    st.session_state.data = sample_data
+                    st.session_state.is_spark = False
+            else:
+                logger.info("Dimensioni sample piccole. Utilizzo di Pandas.")
+                st.session_state.data = sample_data
+                st.session_state.is_spark = False
+            
             st.session_state.datasets_loaded = True
-            st.info("📊 Using sample data - upload your files above")
+            st.info("📊 Using sample data - upload your files above for real analysis")
     
-    # Mostra dati se caricati
-    if st.session_state.datasets_loaded and st.session_state.combined_df is not None:
-        df = st.session_state.combined_df
+    # Display loaded data
+    if st.session_state.datasets_loaded and st.session_state.data is not None:
+        logger.info("I dati sono caricati. Avvio della visualizzazione e dell'analisi.")
         
-        # File info expandable
+        # Engine indicator
+        display_engine_info(
+            "spark" if st.session_state.is_spark else "pandas",
+            st.session_state.load_info,
+            st.session_state.performance_info
+        )
+        
+        # File info
         if st.session_state.load_info:
+            logger.debug("Visualizzazione dei dettagli dei file caricati.")
             with st.expander(f"📁 File Details ({len(st.session_state.load_info)} files)"):
                 info_df = pd.DataFrame(st.session_state.load_info)
-                
-                # Add converted indicator
-                if 'converted' in info_df.columns:
-                    info_df['format'] = info_df.apply(lambda x: 
-                        '📦 JSON.GZ→Parquet' if x['converted'] else 
-                        '📄 ' + x['file'].split('.')[-1].upper(), axis=1)
-                
-                st.dataframe(info_df[['file', 'format', 'rows', 'columns', 'size_mb']], 
-                           use_container_width=True)
+                st.dataframe(info_df, use_container_width=True)
         
-        # Quick dataset info
-        with st.expander("📋 Dataset Overview", expanded=False):
-            col1, col2 = st.columns(2)
-            with col1:
-                st.write("**Columns:**")
-                for col in df.columns[:10]:  # Mostra solo prime 10
-                    st.write(f"• {col}")
-                if len(df.columns) > 10:
-                    st.write(f"• ... and {len(df.columns)-10} more")
-            
-            with col2:
-                st.write("**Sample:**")
-                st.dataframe(df.head(3), use_container_width=True)
+        data = st.session_state.data
+        is_spark = st.session_state.is_spark
         
-        # Metriche overview
-        create_overview_metrics(df, st.session_state.load_info)
+        create_overview_metrics_spark(data, is_spark, st.session_state.load_info)
         
         st.divider()
         
-        # Layout principale con tabs
         tab1, tab2, tab3, tab4 = st.tabs(["📊 Analysis", "🔍 Custom Query", "📈 Advanced", "💾 Export"])
         
         with tab1:
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                # Distribuzione per tipo
-                fig1 = create_disaster_distribution(df)
-                if fig1:
-                    st.plotly_chart(fig1, use_container_width=True)
-                else:
-                    st.info("Type distribution: No suitable column found")
+            try:
+                logger.info("Passaggio al Tab 'Analysis'.")
+                if is_spark:
+                    logger.info("Generazione di grafici analitici con Spark.")
+                    charts = create_charts_from_spark(data)
+                    
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        if 'type_distribution' in charts:
+                            st.plotly_chart(charts['type_distribution'], use_container_width=True)
+                        if 'country_distribution' in charts: # Nota: il codice originale ha 'geo_distribution' ma la funzione crea 'country_distribution'
+                            st.plotly_chart(charts['country_distribution'], use_container_width=True)
+                    
+                    with col2:
+                        if 'temporal_trend' in charts:
+                            st.plotly_chart(charts['temporal_trend'], use_container_width=True)
+                        if 'economic_loss_distribution' in charts: # Aggiunto per coerenza
+                            st.plotly_chart(charts['economic_loss_distribution'], use_container_width=True)
+                    
+                    if st.button("📊 Get Detailed Statistics"):
+                        logger.info("Richiesta di statistiche dettagliate.")
+                        with st.spinner("Computing statistics with Spark..."):
+                            stats = st.session_state.spark_manager.get_basic_stats(data)
+                            logger.info("Statistiche calcolate con successo.")
+                            
+                            col1, col2 = st.columns(2)
+                            
+                            with col1:
+                                st.subheader("Dataset Overview")
+                                st.metric("Total Rows", f"{stats['total_rows']:,}")
+                                st.metric("Total Columns", stats['total_columns'])
+                                
+                                if 'describe' in stats:
+                                    st.subheader("Numeric Columns Summary")
+                                    st.dataframe(stats['describe'], use_container_width=True)
+                            
+                            with col2:
+                                st.subheader("Data Quality")
+                                null_df = pd.DataFrame([
+                                    {"Column": col, "Null Count": count, "Null %": f"{(count/stats['total_rows']*100):.1f}%"}
+                                    for col, count in stats['null_counts'].items()
+                                ])
+                                st.dataframe(null_df, use_container_width=True)
                 
-                # Distribuzione geografica
-                fig2 = create_geographical_distribution(df)
-                if fig2:
-                    st.plotly_chart(fig2, use_container_width=True)
                 else:
-                    st.info("Geographic distribution: No suitable column found")
-            
-            with col2:
-                # Trend temporale
-                fig3 = create_temporal_trend(df)
-                if fig3:
-                    st.plotly_chart(fig3, use_container_width=True)
-                else:
-                    st.info("Temporal trend: No suitable date column found")
-                
-                # Distribuzione per file sorgente
-                fig4 = create_files_distribution(df)
-                if fig4:
-                    st.plotly_chart(fig4, use_container_width=True)
-                else:
-                    st.info("Multiple files analysis not available")
+                    logger.info("Generazione di grafici analitici con Pandas.")
+                    st.info("🐼 Using Pandas engine - consider Spark for larger datasets")
+                    if 'type' in data.columns:
+                        type_counts = data['type'].value_counts().head(10)
+                        fig = px.bar(x=type_counts.values, y=type_counts.index, orientation='h', 
+                                    title="Events by Type")
+                        st.plotly_chart(fig, use_container_width=True)
+                    else:
+                        logger.warning("Colonna 'type' non trovata in Pandas DataFrame. Impossibile generare grafico.")           
+            except Exception as e:
+                logger.error(f"Errore nella visualizzazione delle analisi: {e}", exc_info=True)
+                st.error("Could not display charts.")
         
         with tab2:
+            logger.info("Passaggio al Tab 'Custom Query'.")
             st.subheader("🔍 Custom Aggregation")
-            
-            col1, col2, col3, col4 = st.columns(4)
-            
-            with col1:
-                group_col = st.selectbox("Group by:", df.columns)
-            
-            with col2:
-                numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-                available_cols = ['count'] + numeric_cols
-                agg_col = st.selectbox("Aggregate:", available_cols)
-            
-            with col3:
-                if agg_col != 'count':
-                    agg_func = st.selectbox("Function:", ['sum', 'mean', 'max', 'min', 'std'])
-                else:
-                    agg_func = 'count'
-            
-            with col4:
-                if st.button("🚀 Run", type="primary"):
-                    result = perform_custom_aggregation(df, group_col, agg_col, agg_func)
+            try:
+                if is_spark:
+                    st.info("⚡ Using Spark SQL for high-performance aggregations")
+                    logger.info("Interfaccia di aggregazione personalizzata per Spark.")
                     
-                    if result is not None:
-                        col_left, col_right = st.columns(2)
-                        with col_left:
-                            st.dataframe(result, use_container_width=True)
-                        
-                        with col_right:
-                            if len(result) > 0:
-                                fig = px.bar(
-                                    result.head(10),
-                                    x=result.columns[-1],
-                                    y=result.columns[0],
-                                    orientation='h',
-                                    title=f"{agg_func.title()} of {agg_col} by {group_col}"
+                    col1, col2, col3, col4 = st.columns(4)
+                    
+                    with col1:
+                        group_col = st.selectbox("Group by:", data.columns, key="agg_group_col")
+                    
+                    with col2:
+                        from pyspark.sql.types import IntegerType, LongType, FloatType, DoubleType
+                        numeric_cols = [field.name for field in data.schema.fields 
+                                        if isinstance(field.dataType, (IntegerType, LongType, FloatType, DoubleType))]
+                        available_cols = ['count'] + numeric_cols
+                        agg_col = st.selectbox("Aggregate:", available_cols, key="agg_col")
+                    
+                    with col3:
+                        if agg_col != 'count':
+                            agg_func = st.selectbox("Function:", ['sum', 'avg', 'max', 'min'], key="agg_func")
+                        else:
+                            agg_func = 'count'
+                    
+                    with col4:
+                        if st.button("🚀 Run Spark Query", type="primary"):
+                            logger.info(f"Esecuzione query Spark custom: GROUP BY {group_col}, AGGREGATE {agg_func} on {agg_col}.")
+                            with st.spinner("Running Spark aggregation..."):
+                                result = st.session_state.spark_manager.create_aggregation_spark(
+                                    data, group_col, agg_col if agg_col != 'count' else None, agg_func
                                 )
-                                st.plotly_chart(fig, use_container_width=True)
-        
-        with tab3:
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                # Correlation matrix
-                numeric_df = df.select_dtypes(include=[np.number])
-                if len(numeric_df.columns) > 1:
-                    corr_matrix = numeric_df.corr()
-                    
-                    fig = px.imshow(
-                        corr_matrix,
-                        text_auto=True,
-                        aspect="auto",
-                        title="Correlation Matrix",
-                        color_continuous_scale="RdBu_r"
-                    )
-                    fig.update_layout(height=400)
-                    st.plotly_chart(fig, use_container_width=True)
+                                
+                                if result is not None and not result.empty:
+                                    logger.info("Query Spark eseguita con successo. Visualizzazione risultati.")
+                                    col_left, col_right = st.columns(2)
+                                    
+                                    with col_left:
+                                        st.subheader("Results")
+                                        st.dataframe(result, use_container_width=True)
+                                    
+                                    with col_right:
+                                        st.subheader("Visualization")
+                                        fig = px.bar(
+                                            result.head(10),
+                                            x=result.columns[-1],
+                                            y=result.columns[0],
+                                            orientation='h',
+                                            title=f"{agg_func.title()} of {agg_col} by {group_col}",
+                                            color=result.columns[-1],
+                                            color_continuous_scale="viridis"
+                                        )
+                                        st.plotly_chart(fig, use_container_width=True)
+                                    
+                                    st.success(f"✅ Query completed using Spark distributed processing")
+                                else:
+                                    logger.warning("La query Spark ha prodotto un risultato vuoto.")
+                                    st.warning("La query non ha prodotto risultati.")
                 else:
-                    st.info("Need at least 2 numeric columns for correlation")
+                    logger.info("Interfaccia di aggregazione personalizzata per Pandas.")
+                    st.info("🐼 Using Pandas for aggregation")
                 
-                # Top events per file
-                if 'source_file' in df.columns:
-                    st.subheader("📁 Events per File")
-                    file_counts = df['source_file'].value_counts()
-                    st.dataframe(file_counts.head(10), use_container_width=True)
+            except Exception as e:
+                logger.error(f"Errore durante l'esecuzione della query SQL: {e}", exc_info=True)
+                st.error(f"SQL Error: {e}")
             
-            with col2:
-                # Data quality overview
-                st.subheader("🎯 Data Quality")
+        with tab3:
+            logger.info("Passaggio al Tab 'Advanced'.")
+            st.subheader("📈 Advanced Analytics")
+            
+            if is_spark:
+                logger.info("Interfaccia di analytics avanzata per Spark.")
+                col1, col2 = st.columns(2)
                 
-                quality_info = []
-                for col in df.columns:
-                    null_pct = (df[col].isnull().sum() / len(df)) * 100
-                    quality_info.append({
-                        'Column': col,
-                        'Null %': f"{null_pct:.1f}%",
-                        'Unique': df[col].nunique(),
-                        'Type': str(df[col].dtype)
-                    })
+                with col1:
+                    st.subheader("⚡ Spark SQL Query")
+                    
+                    data.createOrReplaceTempView("disasters")
+                    logger.debug("Creata vista temporanea 'disasters' per le query SQL.")
+                    
+                    sql_query = st.text_area(
+                        "Write custom Spark SQL query:",
+                        value="SELECT type, COUNT(*) as count FROM disasters GROUP BY type ORDER BY count DESC LIMIT 10",
+                        height=150,
+                        key="spark_sql_query"
+                    )
+                    
+                    if st.button("Execute SQL"):
+                        logger.info(f"Esecuzione query Spark SQL: {sql_query}")
+                        try:
+                            with st.spinner("Executing Spark SQL..."):
+                                spark = st.session_state.spark_manager.spark
+                                sql_result = spark.sql(sql_query)
+                                result_pd = sql_result.toPandas()
+                                logger.info("Query SQL eseguita con successo. Risultati convertiti in Pandas.")
+                                
+                                st.subheader("Query Results")
+                                st.dataframe(result_pd, use_container_width=True)
+                                
+                                if len(result_pd.columns) == 2 and len(result_pd) <= 20:
+                                    fig = px.bar(result_pd, x=result_pd.columns[1], y=result_pd.columns[0], 
+                                                 orientation='h', title="Query Results")
+                                    st.plotly_chart(fig, use_container_width=True)
+                                    logger.debug("Visualizzazione automatica dei risultati SQL.")
+                        
+                        except Exception as e:
+                            logger.error(f"Errore durante l'esecuzione della query SQL: {e}")
+                            st.error(f"SQL Error: {str(e)}")
                 
-                quality_df = pd.DataFrame(quality_info)
-                st.dataframe(quality_df, use_container_width=True)
+                with col2:
+                    st.subheader("🎯 Performance Monitoring")
+                    
+                    spark = st.session_state.spark_manager.spark
+                    if spark:
+                        st.write("**Spark Configuration:**")
+                        st.write(f"• App Name: {spark.sparkContext.appName}")
+                        st.write(f"• Cores: {spark.sparkContext.defaultParallelism}")
+                        st.write(f"• Master: {spark.sparkContext.master}")
+                        
+                        if hasattr(data, 'is_cached') and data.is_cached:
+                            st.success("✅ Data is cached in memory")
+                            logger.info("Il DataFrame Spark è nella cache.")
+                        else:
+                            if st.button("💾 Cache Dataset"):
+                                data.cache()
+                                st.success("✅ Dataset cached for faster subsequent queries")
+                                logger.info("Il DataFrame Spark è stato messo in cache.")
+                    
+                    st.subheader("📋 Data Schema")
+                    schema_info = []
+                    for field in data.schema.fields:
+                        schema_info.append({
+                            'Column': field.name,
+                            'Type': str(field.dataType),
+                            'Nullable': field.nullable
+                        })
+                    
+                    schema_df = pd.DataFrame(schema_info)
+                    st.dataframe(schema_df, use_container_width=True)
+                    logger.debug("Visualizzazione dello schema dei dati.")
+            
+            else:
+                st.info("🐼 Advanced analytics available with Spark engine for larger datasets")
+                logger.info("Funzionalità avanzate non disponibili con Pandas Engine.")
         
         with tab4:
-            st.subheader("💾 Export Data")
+            logger.info("Passaggio al Tab 'Export'.")
+            st.subheader("💾 Export Options")
             
             col1, col2, col3 = st.columns(3)
             
             with col1:
-                # Export combined dataset
-                csv = df.to_csv(index=False)
-                st.download_button(
-                    "📁 Download Combined Dataset (CSV)",
-                    csv,
-                    f"combined_disaster_data_{len(df)}_records.csv",
-                    "text/csv"
-                )
+                st.subheader("📄 Standard Export")
                 
-                # Export as optimized parquet
-                parquet_buffer = io.BytesIO()
-                df.to_parquet(parquet_buffer, index=False)
-                st.download_button(
-                    "🚀 Download Combined Dataset (Parquet)",
-                    parquet_buffer.getvalue(),
-                    f"combined_disaster_data_{len(df)}_records.parquet",
-                    "application/octet-stream"
-                )
-            
-            with col2:
-                # Export per source file
-                if 'source_file' in df.columns:
-                    selected_source = st.selectbox(
-                        "Export single file:",
-                        ['All'] + df['source_file'].unique().tolist()
-                    )
+                if is_spark:
+                    if st.button("📊 Export Sample (CSV)"):
+                        logger.info("Richiesta di esportazione di un campione (CSV).")
+                        with st.spinner("Generating sample with Spark..."):
+                            sample_pd = st.session_state.spark_manager.spark_df_to_pandas_sample(data, 10000)
+                            csv = sample_pd.to_csv(index=False)
+                            st.download_button(
+                                "⬇️ Download Sample CSV",
+                                csv,
+                                f"disaster_sample_{len(sample_pd)}_records.csv",
+                                "text/csv"
+                            )
+                            logger.info(f"Campione di {len(sample_pd)} record generato per il download.")
                     
-                    if selected_source != 'All':
-                        filtered_df = df[df['source_file'] == selected_source]
-                        filtered_csv = filtered_df.to_csv(index=False)
+                    if st.button("🚀 Export Full Dataset (Parquet)"):
+                        st.info("💡 For large Spark datasets, use 'Advanced Export' to save directly to file system")
+                
+                else:
+                    if hasattr(data, 'to_csv'):
+                        csv = data.to_csv(index=False)
                         st.download_button(
-                            f"📋 Download {selected_source}",
-                            filtered_csv,
-                            f"filtered_{selected_source}.csv",
+                            "📄 Download CSV",
+                            csv,
+                            f"disaster_data_{len(data)}_records.csv",
                             "text/csv"
                         )
+                        logger.info("Dati completi (Pandas) preparati per il download CSV.")
+            
+            with col2:
+                st.subheader("⚡ Advanced Export")
+                
+                if is_spark:
+                    logger.info("Interfaccia di esportazione avanzata per Spark.")
+                    export_path = st.text_input("Output path:", "/tmp/disaster_export", key="export_path")
+                    export_format = st.selectbox("Format:", ["parquet", "csv", "json"], key="export_format")
+                    
+                    if st.button("🚀 Export with Spark"):
+                        logger.info(f"Avvio dell'esportazione avanzata in formato {export_format} al percorso {export_path}.")
+                        try:
+                            with st.spinner(f"Exporting to {export_format}..."):
+                                if export_format == "parquet":
+                                    data.write.mode("overwrite").parquet(export_path)
+                                elif export_format == "csv":
+                                    data.write.mode("overwrite").option("header", "true").csv(export_path)
+                                elif export_format == "json":
+                                    data.write.mode("overwrite").json(export_path)
+                                
+                                st.success(f"✅ Data exported to {export_path}")
+                                st.info("💡 Files saved to local file system - check the specified path")
+                                logger.info("Esportazione Spark completata con successo.")
+                        
+                        except Exception as e:
+                            logger.error(f"Errore durante l'esportazione avanzata: {e}")
+                            st.error(f"Export error: {str(e)}")
+                else:
+                    st.info("⚡ Advanced export available with Spark engine")
             
             with col3:
-                # Export summary
-                summary_data = {
-                    'Metric': ['Total Records', 'Total Columns', 'Files Loaded', 'Date Range'],
-                    'Value': [
-                        len(df),
-                        len(df.columns),
-                        df['source_file'].nunique() if 'source_file' in df.columns else 1,
-                        f"{df['date'].min()} to {df['date'].max()}" if 'date' in df.columns else 'N/A'
-                    ]
-                }
-                summary_df = pd.DataFrame(summary_data)
-                summary_csv = summary_df.to_csv(index=False)
-                st.download_button(
-                    "📊 Download Summary",
-                    summary_csv,
-                    "disaster_summary.csv",
-                    "text/csv"
-                )
-    
+                st.subheader("📊 Analytics Export")
+                
+                if st.button("📋 Generate Report"):
+                    logger.info("Generazione del report di analisi.")
+                    report_data = {
+                        'Analysis Summary': [
+                            f"Total Records: {data.count() if is_spark else len(data):,}",
+                            f"Total Columns: {len(data.columns)}",
+                            f"Processing Engine: {'Apache Spark' if is_spark else 'Pandas'}",
+                            f"Files Processed: {len(st.session_state.load_info) if st.session_state.load_info else 1}",
+                            f"Analysis Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                        ]
+                    }
+                    
+                    report_df = pd.DataFrame([(k, v) for k, values in report_data.items() for v in values], 
+                                             columns=['Category', 'Value'])
+                    
+                    report_csv = report_df.to_csv(index=False)
+                    st.download_button(
+                        "📊 Download Analysis Report",
+                        report_csv,
+                        "disaster_analysis_report.csv",
+                        "text/csv"
+                    )
+                    logger.info("Report di analisi generato e pronto per il download.")
     else:
-        # Stato iniziale - nessun dato caricato
+        # Mostra un messaggio di benvenuto e istruzioni chiare per l'utente.
+        # st.info crea una casella informativa con un'icona.
         st.info("👆 Upload your disaster datasets above to start the analysis")
+
+        # Aggiunge una sottosezione per evidenziare le funzionalità basate su Spark.
+        st.subheader("🚀 Spark-Powered Features")
         
-        # Show example of what we expect
-        st.subheader("📋 Supported Formats")
-        
+        # Divide la larghezza della pagina in due colonne per un layout più pulito.
         col1, col2 = st.columns(2)
+        
+        # Inizia il blocco per la prima colonna.
         with col1:
+            # Usa il markdown per formattare il testo con grassetto e elenchi.
+            # Questo testo descrive i vantaggi dell'auto-ottimizzazione di Spark.
             st.markdown("""
-            **📦 JSON.GZ (Recommended)**
-            - Automatically converted to Parquet
-            - Best compression ratio
-            - Fastest processing after conversion
+            **⚡ Auto-Optimization**
+            - Files >100MB → Spark Engine
+            - Multiple files → Distributed processing  
+            - Smart memory management
+            - Lazy evaluation for efficiency
             
-            **📄 Other Formats**
-            - CSV: Standard comma-separated
-            - JSON: Plain JSON files  
-            - Parquet: Already optimized
+            **🎯 Performance Benefits**
+            - Handle datasets up to several GB
+            - Parallel processing across CPU cores
+            - Optimized for aggregations and joins
+            - Memory-efficient operations
             """)
         
+        # Inizia il blocco per la seconda colonna.
         with col2:
-            st.markdown("**📊 Expected JSON Structure:**")
-            example_json = {
-                "disasters": [
-                    {"id": 1, "type": "Earthquake", "country": "Italy", "casualties": 150},
-                    {"id": 2, "type": "Flood", "country": "Germany", "casualties": 25}
-                ]
-            }
-            st.code(json.dumps(example_json, indent=2), language='json')
+            # Anche qui, usa il markdown per formattare e descrivere le funzionalità
+            # di analisi avanzata ed esportazione.
+            st.markdown("""
+            **📊 Advanced Analytics**
+            - Custom Spark SQL queries
+            - Real-time performance monitoring
+            - Distributed aggregations
+            - Schema optimization
+            
+            **💾 Export Options**
+            - Direct file system export
+            - Optimized Parquet format
+            - Large dataset handling
+            - Batch processing support
+            """)
+        
+        # Aggiunge una sottosezione per mostrare il formato dati supportato.
+        st.subheader("📋 Supported Data Formats")
+        
+        # st.code mostra un blocco di codice formattato.
+        # L'esempio JSON è utile per guidare gli utenti sul tipo di struttura dati da caricare.
+        st.code("""
+    # Example disaster data structure
+    {
+    "disaster_id": 1,
+    "type": "Earthquake", 
+    "country": "Italy",
+    "date": "2023-01-15",
+    "magnitude": 6.5,
+    "casualties": 150,
+    "economic_loss": 1500000000,
+    "duration_days": 7
+    }
+        """, language='json')
 
 if __name__ == "__main__":
-    main()
+    try:
+        # Esegui l'intera applicazione all'interno di un blocco try
+        main()
+    except Exception as e:
+        # Questo blocco catturerà QUALSIASI errore non gestito all'interno di main()
+        
+        # 1. Logga il traceback completo, che ti darà il file e la riga esatta
+        tb_str = traceback.format_exc()
+        logger.critical(f"ERRORE NON GESTITO A LIVELLO GLOBALE: {e}\nTRACEBACK:\n{tb_str}")
+        
+        # 2. Mostra un messaggio chiaro all'utente nell'interfaccia
+        st.error(f"Si è verificato un errore critico nell'applicazione: {e}")
+        with st.expander("Dettagli Tecnici dell'Errore (dal log)"):
+            st.code(tb_str)
+            
+        # 3. Offri un modo per riavviare
+        if st.button("🔄 Riavvia l'Applicazione"):
+            st.rerun()

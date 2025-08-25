@@ -15,7 +15,7 @@ class Config:
     SPARK_CONFIGS = {
         "spark.sql.adaptive.enabled": "true",
         "spark.sql.adaptive.coalescePartitions.enabled": "true",
-        "spark.sql.execution.arrow.pyspark.enabled": "true",  # Migliori performance con Pandas
+        "spark.sql.execution.arrow.pyspark.enabled": "true",
         "spark.sql.adaptive.skewJoin.enabled": "true",
         "spark.serializer": "org.apache.spark.serializer.KryoSerializer"
     }

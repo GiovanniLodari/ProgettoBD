@@ -30,14 +30,14 @@ st.set_page_config(
 )
 
 # Import delle pagine
-try:
-    from pages.home import show_home_page
-    from pages.data_explorer import show_data_explorer
-    from pages.analytics_page import show_analytics_page
-    from pages.custom_query import show_custom_query_page
-except ImportError as e:
-    st.error(f"Errore nell'import delle pagine: {str(e)}")
-    st.stop()
+# try:
+#     from pages.home import show_home_page
+#     from pages.data_explorer import show_data_explorer
+#     from pages.analytics_page import show_analytics_page
+#     from pages.custom_query import show_custom_query_page
+# except ImportError as e:
+#     st.error(f"Errore nell'import delle pagine: {str(e)}")
+#     st.stop()
 
 def main():
     """Funzione principale dell'applicazione"""
@@ -75,18 +75,18 @@ def main():
     """)
     
     # Mostra la pagina selezionata
-    try:
-        if page_key == "home":
-            show_home_page()
-        elif page_key == "explorer":
-            show_data_explorer()
-        elif page_key == "analytics":
-            show_analytics_page()
-        elif page_key == "query":
-            show_custom_query_page()
-    except Exception as e:
-        st.error(f"Errore nel caricamento della pagina: {str(e)}")
-        logger.error(f"Errore pagina {page_key}: {str(e)}")
+    # try:
+    #     if page_key == "home":
+    #         show_home_page()
+    #     elif page_key == "explorer":
+    #         show_data_explorer()
+    #     elif page_key == "analytics":
+    #         show_analytics_page()
+    #     elif page_key == "query":
+    #         show_custom_query_page()
+    # except Exception as e:
+    #     st.error(f"Errore nel caricamento della pagina: {str(e)}")
+    #     logger.error(f"Errore pagina {page_key}: {str(e)}")
     
     # Footer
     st.sidebar.markdown("---")

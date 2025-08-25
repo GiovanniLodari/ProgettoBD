@@ -8,9 +8,10 @@ from typing import Dict, List, Optional, Tuple, Any
 from pyspark.sql import DataFrame as SparkDataFrame
 from pyspark.sql.functions import *
 from pyspark.sql.types import *
+import pyspark.sql.functions as functions
 
-from .config import Config, DatabaseConfig
-from .spark_manager import SparkManager
+from src.config import Config, DatabaseConfig
+from src.spark_manager import SparkManager
 
 logger = logging.getLogger(__name__)
 
@@ -145,21 +146,22 @@ class DisasterAnalytics:
         results = {}
         
         try:
-            for col in impact_cols:
-                if self._is_numeric_column(col):
+            impact_cols = list(col for col in self.df.columns if self._is_numeric_column(col))
+            for c in impact_cols:
+                if self._is_numeric_column(c):
                     # Statistiche descrittive
-                    stats = self.df.select(col).describe().toPandas()
-                    stats['metric'] = col
-                    results[f"{col}_statistics"] = stats
+                    stats = self.df.select(c).describe().toPandas()
+                    stats['metric'] = c
+                    results[f"{c}_statistics"] = stats
                     
                     # Top eventi per impatto
                     disaster_type_col = self._find_column(['disaster_type', 'type', 'disaster'])
                     if disaster_type_col:
-                        top_impact = self.df.select(disaster_type_col, col) \
-                            .filter(col(col).isNotNull()) \
-                            .orderBy(desc(col)) \
+                        top_impact = self.df.select(disaster_type_col, c) \
+                            .filter(col(c).isNotNull()) \
+                            .orderBy(desc(c)) \
                             .limit(10)
-                        results[f"top_{col}"] = top_impact.toPandas()
+                        results[f"top_{c}"] = top_impact.toPandas()
             
             return results if results else None
             
@@ -177,7 +179,7 @@ class DisasterAnalytics:
         
         try:
             # Converti in Pandas per calcolare la correlazione
-            pandas_df = self.df.select(numeric_cols).toPandas()
+            pandas_df = self.df.select(*numeric_cols).toPandas()
             correlation_matrix = pandas_df.corr()
             
             return correlation_matrix
@@ -383,7 +385,7 @@ class GeneralAnalytics:
                                  for col_info in quality_report['completeness'].values()) / total_cols
             duplicate_penalty = quality_report['consistency']['duplicates']['duplicate_percentage']
             
-            quality_score = max(0, avg_completeness - duplicate_penalty)
+            quality_score = max([0, avg_completeness - duplicate_penalty])
             quality_report['overall_quality_score'] = round(quality_score, 1)
             
             return quality_report
@@ -415,7 +417,8 @@ class QueryEngine:
             if limit_results and 'LIMIT' not in query.upper():
                 query = f"{query} LIMIT {Config.DEFAULT_QUERY_LIMIT}"
             
-            result = self.spark_manager.execute_query(query)
+            # Esegui la query SQL usando la SparkSession
+            result = self.spark_manager.spark.sql(query)
             pandas_result = result.toPandas()
             
             # Aggiungi alla cronologia
