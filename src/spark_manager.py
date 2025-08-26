@@ -26,6 +26,16 @@ class SparkManager:
     def get_spark_session(self, dataset_size_mb=None):
         """Crea o recupera sessione Spark (cached)"""
         if self.spark is None or not self._session_initialized:
+
+            try:
+                hadoop_home = os.path.join(os.path.expanduser('~'), 'hadoop-3.3.6')
+                os.environ['HADOOP_HOME'] = hadoop_home
+                
+                os.environ['PATH'] = f"{os.environ.get('PATH')};{os.path.join(hadoop_home, 'bin')}"
+                logger.info(f"HADOOP_HOME impostato a: {os.environ['HADOOP_HOME']}")
+            except Exception as e:
+                logger.error(f"Errore nell'impostazione di HADOOP_HOME: {e}")
+                st.warning("Potrebbero verificarsi errori di Hadoop/winutils su Windows.")
             
             # Configurazione base
             builder = SparkSession.builder \
@@ -36,7 +46,9 @@ class SparkManager:
                 .config("spark.driver.maxResultSize", "2g") \
                 .config("spark.sql.adaptive.enabled", "true") \
                 .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer") \
-                .config("spark.sql.execution.arrow.pyspark.enabled", "true")
+                .config("spark.sql.execution.arrow.pyspark.enabled", "true") \
+                .config("spark.sql.shuffle.partitions", "4") \
+                .config("spark.memory.fraction", "0.8")
 
             self.spark = builder.getOrCreate()
             

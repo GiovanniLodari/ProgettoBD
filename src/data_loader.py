@@ -15,231 +15,311 @@ from pyspark.sql import functions as F
 from src.spark_manager import SparkManager
 from src.config import Config
 from functools import reduce
+from pyspark.storagelevel import StorageLevel
 import gzip
 import json
-
+from pyspark.sql.types import (
+    StructType, StructField, StringType, LongType, BooleanType, ArrayType
+)
+import shutil
 
 logger = logging.getLogger(__name__)
 
+def _json_to_spark_type(json_type):
+    """Funzione ausiliaria che converte ricorsivamente un tipo dal formato JSON a quello PySpark."""
+    
+    # Caso base per tipi semplici come "string", "long", etc.
+    if isinstance(json_type, str):
+        type_mapping = {
+            "string": StringType(),
+            "long": LongType(),
+            "boolean": BooleanType()
+        }
+        return type_mapping.get(json_type, StringType())
+
+    # Caso ricorsivo per tipi complessi (oggetti e array)
+    if isinstance(json_type, dict):
+        complex_type = json_type.get("type")
+        
+        if complex_type == "struct":
+            # Se è un oggetto, ricrea la StructType chiamando la funzione per ogni campo figlio
+            fields = [
+                StructField(
+                    field['name'],
+                    _json_to_spark_type(field['type']),
+                    field.get('nullable', True)
+                ) for field in json_type.get('fields', [])
+            ]
+            return StructType(fields)
+            
+        elif complex_type == "array":
+            # Se è un array, ricrea l'ArrayType chiamando la funzione per il tipo degli elementi
+            element_type = _json_to_spark_type(json_type['elementType'])
+            contains_null = json_type.get('containsNull', True)
+            return ArrayType(element_type, contains_null)
+
+    # Se il tipo non è riconosciuto, usa StringType come default sicuro
+    return StringType()
+
+
 class SchemaManager:
     """
-    Gestisce gli schemi predefiniti con fallback automatico.
-    Mantiene tutti gli schemi esistenti + aggiunge capacità di auto-recovery.
+    Gestisce la generazione dello schema Twitter leggendolo da un file JSON.
+    Lo schema viene messo in cache dopo la prima lettura per efficienza.
     """
     
+    _schema_cache = None # Variabile di classe per la cache
+
     @staticmethod
-    def get_twitter_schema():
+    def get_twitter_schema(json_path=r"C:\Users\giova\Desktop\ProgettoBD\schema_generale.json"):
         """
-        MANTIENE lo schema Twitter originale completo che hai sviluppato.
-        Questo schema rimane identico - il fallback viene gestito nelle opzioni di caricamento.
-        """
-        # --- PASSO 1: I SOTTO-SCHEMI, CORRETTI E RESI FLESSIBILI ---
-
-        # Schema per le URL, con 'unwound' opzionale
-        url_schema = StructType([
-            StructField("display_url", StringType(), True),
-            StructField("expanded_url", StringType(), True),
-            StructField("indices", ArrayType(LongType()), True),
-            StructField("url", StringType(), True),
-            StructField("unwound", StructType([
-                StructField("description", StringType(), True),
-                StructField("status", LongType(), True),
-                StructField("title", StringType(), True),
-                StructField("url", StringType(), True)
-            ]), True)
-        ])
-
-        # Schema per i media, ora più completo e tollerante
-        media_schema = StructType([
-            StructField("display_url", StringType(), True),
-            StructField("expanded_url", StringType(), True),
-            StructField("id", LongType(), True),
-            StructField("id_str", StringType(), True),
-            StructField("indices", ArrayType(LongType()), True),
-            StructField("media_url", StringType(), True),
-            StructField("media_url_https", StringType(), True),
-            StructField("sizes", StructType([
-                StructField("large", StructType([
-                    StructField("h", LongType(), True), 
-                    StructField("resize", StringType(), True), 
-                    StructField("w", LongType(), True)
-                ]), True),
-                StructField("medium", StructType([
-                    StructField("h", LongType(), True), 
-                    StructField("resize", StringType(), True), 
-                    StructField("w", LongType(), True)
-                ]), True),
-                StructField("small", StructType([
-                    StructField("h", LongType(), True), 
-                    StructField("resize", StringType(), True), 
-                    StructField("w", LongType(), True)
-                ]), True),
-                StructField("thumb", StructType([
-                    StructField("h", LongType(), True), 
-                    StructField("resize", StringType(), True), 
-                    StructField("w", LongType(), True)
-                ]), True)
-            ]), True),
-            StructField("type", StringType(), True),
-            StructField("url", StringType(), True),
-            # Campi opzionali trovati nell'errore
-            StructField("source_status_id", LongType(), True),
-            StructField("source_status_id_str", StringType(), True),
-            StructField("source_user_id", LongType(), True),
-            StructField("source_user_id_str", StringType(), True),
-            StructField("video_info", StructType([
-                StructField("aspect_ratio", ArrayType(LongType()), True),
-                StructField("duration_millis", LongType(), True),
-                StructField("variants", ArrayType(StructType([
-                    StructField("bitrate", LongType(), True),
-                    StructField("content_type", StringType(), True),
-                    StructField("url", StringType(), True)
-                ])), True)
-            ]), True)
-        ])
-
-        # Schema per le entities, con 'symbols' corretto
-        entities_schema = StructType([
-            StructField("hashtags", ArrayType(StructType([
-                StructField("indices", ArrayType(LongType()), True), 
-                StructField("text", StringType(), True)
-            ])), True),
-            StructField("media", ArrayType(media_schema), True),
-            StructField("urls", ArrayType(url_schema), True),
-            StructField("user_mentions", ArrayType(StructType([
-                StructField("id", LongType(), True), 
-                StructField("id_str", StringType(), True),
-                StructField("indices", ArrayType(LongType()), True), 
-                StructField("name", StringType(), True),
-                StructField("screen_name", StringType(), True)
-            ])), True),
-            # CORREZIONE: symbols come array di struct
-            StructField("symbols", ArrayType(StructType([
-                StructField("indices", ArrayType(LongType()), True), 
-                StructField("text", StringType(), True)
-            ])), True)
-        ])
-
-        # Schema per l'oggetto user, ora più completo e tollerante
-        user_schema = StructType([
-            StructField("id", LongType(), True),
-            StructField("id_str", StringType(), True),
-            StructField("name", StringType(), True),
-            StructField("screen_name", StringType(), True),
-            StructField("location", StringType(), True),
-            StructField("description", StringType(), True),
-            StructField("url", StringType(), True),
-            StructField("entities", StructType([
-                StructField("description", StructType([
-                    StructField("urls", ArrayType(url_schema), True)
-                ]), True),
-                StructField("url", StructType([
-                    StructField("urls", ArrayType(url_schema), True)
-                ]), True)
-            ]), True),
-            StructField("followers_count", LongType(), True),
-            StructField("friends_count", LongType(), True),
-            StructField("listed_count", LongType(), True),
-            StructField("created_at", StringType(), True),
-            StructField("favourites_count", LongType(), True),
-            StructField("utc_offset", LongType(), True),
-            StructField("time_zone", StringType(), True),
-            StructField("geo_enabled", BooleanType(), True),
-            StructField("verified", BooleanType(), True),
-            StructField("statuses_count", LongType(), True),
-            StructField("lang", StringType(), True),
-            StructField("contributors_enabled", BooleanType(), True),
-            StructField("is_translator", BooleanType(), True),
-            StructField("is_translation_enabled", BooleanType(), True),
-            StructField("profile_background_color", StringType(), True),
-            StructField("profile_background_image_url", StringType(), True),
-            StructField("profile_background_image_url_https", StringType(), True),
-            StructField("profile_background_tile", BooleanType(), True),
-            StructField("profile_image_url", StringType(), True),
-            StructField("profile_image_url_https", StringType(), True),
-            StructField("profile_banner_url", StringType(), True),
-            StructField("profile_link_color", StringType(), True),
-            StructField("profile_sidebar_border_color", StringType(), True),
-            StructField("profile_sidebar_fill_color", StringType(), True),
-            StructField("profile_text_color", StringType(), True),
-            StructField("profile_use_background_image", BooleanType(), True),
-            StructField("has_extended_profile", BooleanType(), True),
-            StructField("default_profile", BooleanType(), True),
-            StructField("default_profile_image", BooleanType(), True),
-            StructField("protected", BooleanType(), True),
-            StructField("translator_type", StringType(), True),
-            # CORREZIONE: Questi campi sono stringhe, non booleani
-            StructField("following", StringType(), True),
-            StructField("follow_request_sent", StringType(), True),
-            StructField("notifications", StringType(), True)
-        ])
-
-        bounding_box_schema = StructType([
-            StructField("coordinates", StringType(), True),
-            StructField("type", StringType(), True)
-        ])
-
-        place_schema = StructType([
-            StructField("id", StringType(), True),
-            StructField("url", StringType(), True),
-            StructField("place_type", StringType(), True),
-            StructField("name", StringType(), True),
-            StructField("full_name", StringType(), True),
-            StructField("country_code", StringType(), True),
-            StructField("country", StringType(), True),
-            StructField("bounding_box", bounding_box_schema, True)
-        ])
+        Carica lo schema Twitter da un file JSON e lo converte in uno schema PySpark.
         
-        coordinates_schema = StructType([
-            StructField("coordinates", StringType(), True),
-            StructField("type", StringType(), True)
-        ])
+        Args:
+            json_path (str): Il percorso del file schema_generale.json.
+        
+        Returns:
+            StructType: Lo schema PySpark completo e pronto all'uso.
+        """
+        # Se lo schema è già stato generato, lo restituisce dalla cache
+        if SchemaManager._schema_cache:
+            return SchemaManager._schema_cache
 
-        # --- SCHEMA BASE DEL TWEET (ORDINATO ALFABETICAMENTE) ---
-        tweet_schema_base = StructType([
-            StructField("contributors", StringType(), True),  # Campo mancante
-            StructField("coordinates", coordinates_schema, True),
-            StructField("created_at", StringType(), True),
-            StructField("entities", entities_schema, True),
-            StructField("extended_entities", entities_schema, True),
-            StructField("favorite_count", LongType(), True),
-            StructField("favorited", BooleanType(), True),
-            StructField("filter_level", StringType(), True),  # Campo mancante
-            StructField("full_text", StringType(), True),
-            StructField("geo", StringType(), True),
-            StructField("id", LongType(), True),
-            StructField("id_str", StringType(), True),
-            StructField("in_reply_to_screen_name", StringType(), True),
-            StructField("in_reply_to_status_id", LongType(), True),
-            StructField("in_reply_to_status_id_str", StringType(), True),  # Campo mancante
-            StructField("in_reply_to_user_id", LongType(), True),
-            StructField("in_reply_to_user_id_str", StringType(), True),  # Campo mancante
-            StructField("is_quote_status", BooleanType(), True),
-            StructField("lang", StringType(), True),
-            StructField("place", place_schema, True),
-            StructField("possibly_sensitive", BooleanType(), True),
-            StructField("quote_count", LongType(), True),
-            StructField("quoted_status_id", LongType(), True),
-            StructField("quoted_status_id_str", StringType(), True),  # Campo mancante
-            StructField("reply_count", LongType(), True),
-            StructField("retweet_count", LongType(), True),
-            StructField("retweeted", BooleanType(), True),
-            StructField("source", StringType(), True),
-            StructField("text", StringType(), True),
-            StructField("timestamp_ms", StringType(), True),
-            StructField("truncated", BooleanType(), True),
-            StructField("user", user_schema, True),
-        ])
+        try:
+            print(f"Lettura e generazione dello schema dal file: {json_path}")
+            # Apre, legge e interpreta il file JSON
+            with open(json_path, 'r', encoding='utf-8') as f:
+                json_schema = json.load(f)
+            
+            # Converte la struttura JSON in uno schema PySpark
+            spark_schema = _json_to_spark_type(json_schema)
+            
+            # Salva lo schema in cache per le prossime chiamate
+            SchemaManager._schema_cache = spark_schema
+            print("Schema generato e messo in cache con successo.")
+            
+            return spark_schema
 
-        # Schema finale con campi ricorsivi
-        final_tweet_schema = StructType(
-            tweet_schema_base.fields + [
-                StructField("quoted_status", tweet_schema_base, True),
-                StructField("retweeted_status", tweet_schema_base, True)
-            ]
-        )
+        except FileNotFoundError:
+            print(f"ERRORE: Il file di schema '{json_path}' non è stato trovato.")
+            return None
+        except Exception as e:
+            print(f"Si è verificato un errore durante la generazione dello schema: {e}")
+            return None
+    
+    # @staticmethod
+    # def get_twitter_schema():
+    #     """
+    #     MANTIENE lo schema Twitter originale completo che hai sviluppato.
+    #     Questo schema rimane identico - il fallback viene gestito nelle opzioni di caricamento.
+    #     """
+    #     # --- PASSO 1: I SOTTO-SCHEMI, CORRETTI E RESI FLESSIBILI ---
 
-        return final_tweet_schema
+    #     # Schema per le URL, con 'unwound' opzionale
+    #     url_schema = StructType([
+    #         StructField("display_url", StringType(), True),
+    #         StructField("expanded_url", StringType(), True),
+    #         StructField("indices", ArrayType(LongType()), True),
+    #         StructField("url", StringType(), True),
+    #         StructField("unwound", StructType([
+    #             StructField("description", StringType(), True),
+    #             StructField("status", LongType(), True),
+    #             StructField("title", StringType(), True),
+    #             StructField("url", StringType(), True)
+    #         ]), True)
+    #     ])
+
+    #     # Schema per i media, ora più completo e tollerante
+    #     media_schema = StructType([
+    #         StructField("display_url", StringType(), True),
+    #         StructField("expanded_url", StringType(), True),
+    #         StructField("id", LongType(), True),
+    #         StructField("id_str", StringType(), True),
+    #         StructField("indices", ArrayType(LongType()), True),
+    #         StructField("media_url", StringType(), True),
+    #         StructField("media_url_https", StringType(), True),
+    #         StructField("sizes", StructType([
+    #             StructField("large", StructType([
+    #                 StructField("h", LongType(), True), 
+    #                 StructField("resize", StringType(), True), 
+    #                 StructField("w", LongType(), True)
+    #             ]), True),
+    #             StructField("medium", StructType([
+    #                 StructField("h", LongType(), True), 
+    #                 StructField("resize", StringType(), True), 
+    #                 StructField("w", LongType(), True)
+    #             ]), True),
+    #             StructField("small", StructType([
+    #                 StructField("h", LongType(), True), 
+    #                 StructField("resize", StringType(), True), 
+    #                 StructField("w", LongType(), True)
+    #             ]), True),
+    #             StructField("thumb", StructType([
+    #                 StructField("h", LongType(), True), 
+    #                 StructField("resize", StringType(), True), 
+    #                 StructField("w", LongType(), True)
+    #             ]), True)
+    #         ]), True),
+    #         StructField("type", StringType(), True),
+    #         StructField("url", StringType(), True),
+    #         # Campi opzionali trovati nell'errore
+    #         StructField("source_status_id", LongType(), True),
+    #         StructField("source_status_id_str", StringType(), True),
+    #         StructField("source_user_id", LongType(), True),
+    #         StructField("source_user_id_str", StringType(), True),
+    #         StructField("video_info", StructType([
+    #             StructField("aspect_ratio", ArrayType(LongType()), True),
+    #             StructField("duration_millis", LongType(), True),
+    #             StructField("variants", ArrayType(StructType([
+    #                 StructField("bitrate", LongType(), True),
+    #                 StructField("content_type", StringType(), True),
+    #                 StructField("url", StringType(), True)
+    #             ])), True)
+    #         ]), True)
+    #     ])
+
+    #     # Schema per le entities, con 'symbols' corretto
+    #     entities_schema = StructType([
+    #         StructField("hashtags", ArrayType(StructType([
+    #             StructField("indices", ArrayType(LongType()), True), 
+    #             StructField("text", StringType(), True)
+    #         ])), True),
+    #         StructField("media", ArrayType(media_schema), True),
+    #         StructField("urls", ArrayType(url_schema), True),
+    #         StructField("user_mentions", ArrayType(StructType([
+    #             StructField("id", LongType(), True), 
+    #             StructField("id_str", StringType(), True),
+    #             StructField("indices", ArrayType(LongType()), True), 
+    #             StructField("name", StringType(), True),
+    #             StructField("screen_name", StringType(), True)
+    #         ])), True),
+    #         # CORREZIONE: symbols come array di struct
+    #         StructField("symbols", ArrayType(StructType([
+    #             StructField("indices", ArrayType(LongType()), True), 
+    #             StructField("text", StringType(), True)
+    #         ])), True)
+    #     ])
+
+    #     # Schema per l'oggetto user, ora più completo e tollerante
+    #     user_schema = StructType([
+    #         StructField("id", LongType(), True),
+    #         StructField("id_str", StringType(), True),
+    #         StructField("name", StringType(), True),
+    #         StructField("screen_name", StringType(), True),
+    #         StructField("location", StringType(), True),
+    #         StructField("description", StringType(), True),
+    #         StructField("url", StringType(), True),
+    #         StructField("entities", StructType([
+    #             StructField("description", StructType([
+    #                 StructField("urls", ArrayType(url_schema), True)
+    #             ]), True),
+    #             StructField("url", StructType([
+    #                 StructField("urls", ArrayType(url_schema), True)
+    #             ]), True)
+    #         ]), True),
+    #         StructField("followers_count", LongType(), True),
+    #         StructField("friends_count", LongType(), True),
+    #         StructField("listed_count", LongType(), True),
+    #         StructField("created_at", StringType(), True),
+    #         StructField("favourites_count", LongType(), True),
+    #         StructField("utc_offset", LongType(), True),
+    #         StructField("time_zone", StringType(), True),
+    #         StructField("geo_enabled", BooleanType(), True),
+    #         StructField("verified", BooleanType(), True),
+    #         StructField("statuses_count", LongType(), True),
+    #         StructField("lang", StringType(), True),
+    #         StructField("contributors_enabled", BooleanType(), True),
+    #         StructField("is_translator", BooleanType(), True),
+    #         StructField("is_translation_enabled", BooleanType(), True),
+    #         StructField("profile_background_color", StringType(), True),
+    #         StructField("profile_background_image_url", StringType(), True),
+    #         StructField("profile_background_image_url_https", StringType(), True),
+    #         StructField("profile_background_tile", BooleanType(), True),
+    #         StructField("profile_image_url", StringType(), True),
+    #         StructField("profile_image_url_https", StringType(), True),
+    #         StructField("profile_banner_url", StringType(), True),
+    #         StructField("profile_link_color", StringType(), True),
+    #         StructField("profile_sidebar_border_color", StringType(), True),
+    #         StructField("profile_sidebar_fill_color", StringType(), True),
+    #         StructField("profile_text_color", StringType(), True),
+    #         StructField("profile_use_background_image", BooleanType(), True),
+    #         StructField("has_extended_profile", BooleanType(), True),
+    #         StructField("default_profile", BooleanType(), True),
+    #         StructField("default_profile_image", BooleanType(), True),
+    #         StructField("protected", BooleanType(), True),
+    #         StructField("translator_type", StringType(), True),
+    #         # CORREZIONE: Questi campi sono stringhe, non booleani
+    #         StructField("following", StringType(), True),
+    #         StructField("follow_request_sent", StringType(), True),
+    #         StructField("notifications", StringType(), True)
+    #     ])
+
+    #     bounding_box_schema = StructType([
+    #         StructField("coordinates", StringType(), True),
+    #         StructField("type", StringType(), True)
+    #     ])
+
+    #     place_schema = StructType([
+    #         StructField("id", StringType(), True),
+    #         StructField("url", StringType(), True),
+    #         StructField("place_type", StringType(), True),
+    #         StructField("name", StringType(), True),
+    #         StructField("full_name", StringType(), True),
+    #         StructField("country_code", StringType(), True),
+    #         StructField("country", StringType(), True),
+    #         StructField("bounding_box", bounding_box_schema, True)
+    #     ])
+        
+    #     coordinates_schema = StructType([
+    #         StructField("coordinates", StringType(), True),
+    #         StructField("type", StringType(), True)
+    #     ])
+
+    #     # --- SCHEMA BASE DEL TWEET (ORDINATO ALFABETICAMENTE) ---
+    #     tweet_schema_base = StructType([
+    #         StructField("contributors", StringType(), True),  # Campo mancante
+    #         StructField("coordinates", coordinates_schema, True),
+    #         StructField("created_at", StringType(), True),
+    #         StructField("entities", entities_schema, True),
+    #         StructField("extended_entities", entities_schema, True),
+    #         StructField("favorite_count", LongType(), True),
+    #         StructField("favorited", BooleanType(), True),
+    #         StructField("filter_level", StringType(), True),  # Campo mancante
+    #         StructField("full_text", StringType(), True),
+    #         StructField("geo", StringType(), True),
+    #         StructField("id", LongType(), True),
+    #         StructField("id_str", StringType(), True),
+    #         StructField("in_reply_to_screen_name", StringType(), True),
+    #         StructField("in_reply_to_status_id", LongType(), True),
+    #         StructField("in_reply_to_status_id_str", StringType(), True),  # Campo mancante
+    #         StructField("in_reply_to_user_id", LongType(), True),
+    #         StructField("in_reply_to_user_id_str", StringType(), True),  # Campo mancante
+    #         StructField("is_quote_status", BooleanType(), True),
+    #         StructField("lang", StringType(), True),
+    #         StructField("place", place_schema, True),
+    #         StructField("possibly_sensitive", BooleanType(), True),
+    #         StructField("quote_count", LongType(), True),
+    #         StructField("quoted_status_id", LongType(), True),
+    #         StructField("quoted_status_id_str", StringType(), True),  # Campo mancante
+    #         StructField("reply_count", LongType(), True),
+    #         StructField("retweet_count", LongType(), True),
+    #         StructField("retweeted", BooleanType(), True),
+    #         StructField("source", StringType(), True),
+    #         StructField("text", StringType(), True),
+    #         StructField("timestamp_ms", StringType(), True),
+    #         StructField("truncated", BooleanType(), True),
+    #         StructField("user", user_schema, True),
+    #     ])
+
+    #     # Schema finale con campi ricorsivi
+    #     final_tweet_schema = StructType(
+    #         tweet_schema_base.fields + [
+    #             StructField("quoted_status", tweet_schema_base, True),
+    #             StructField("retweeted_status", tweet_schema_base, True)
+    #         ]
+    #     )
+
+    #     return final_tweet_schema
 
     @staticmethod
     def get_generic_schema():
@@ -542,99 +622,139 @@ class DataLoader:
             logger.error(f"Errore nel caricamento del file {file_path}: {str(e)}", exc_info=True)
             return None
 
+    # Sostituisci la tua funzione esistente in DataLoader con questa
+
     def load_multiple_files(self, file_paths: List[str], file_format: str = None, schema_type: str = 'auto') -> Optional[SparkDataFrame]:
-        logger.info(f"Caricamento di {len(file_paths)} file (versione robusta v2)")
+        logger.info(f"Avvio caricamento di {len(file_paths)} file con strategia 'Normalizza-Post-Lettura'")
         
         spark = self.spark_manager
-        
         if not file_paths:
             logger.error("Nessun file fornito per il caricamento.")
             return None
 
-        # --- FASE 1: Carica tutti i DataFrame individualmente ---
-        dataframes = []
+        # --- SETUP: Definisci lo schema master e la cartella di output ---
+        master_schema = self.schema_manager.get_twitter_schema()
+        if not master_schema:
+            logger.error("Impossibile ottenere lo schema Twitter master. Caricamento interrotto.")
+            return None
+        logger.info("Utilizzo dello schema Twitter come 'master schema' per la normalizzazione.")
+        
         home_directory = os.path.expanduser('~')
         schema_dir = os.path.join(home_directory, 'Desktop', 'schemas_output')
         os.makedirs(schema_dir, exist_ok=True)
+        
+        dataframes_normalizzati = []
+
+        temp_parquet_dir = "temp_parquet_output"
+        if os.path.exists(temp_parquet_dir):
+            shutil.rmtree(temp_parquet_dir) # Pulisci la cartella da esecuzioni precedenti
+        os.makedirs(temp_parquet_dir)
+
+        # --- FASE 1: Carica e Normalizza ogni DataFrame individualmente ---
         for idx, file_path in enumerate(file_paths):
             try:
-                logger.info(f"Caricamento file {idx+1}/{len(file_paths)}: {file_path}")
+                logger.info(f"--- Processando file {idx+1}/{len(file_paths)}: {file_path} ---")
                 current_format = file_format or self._detect_format(file_path)
                 
+                # 1a. Carica il singolo file lasciando che Spark indovini il suo schema specifico.
                 df = self.schema_manager.load_with_schema_and_fallback(
-                    spark, file_path, current_format, schema_type
+                    spark, file_path, current_format, 'auto' # Forza l'inferenza per massima flessibilità
                 )
                 
-                if df is not None:
-                    df.printSchema()
-
-                    schema_as_json = json.loads(df.schema.json())
-                    schema_formatted_string = json.dumps(schema_as_json, indent=4)
-
+                if df is None:
+                    logger.warning(f"Salto del file {file_path} perché il caricamento ha restituito None.")
+                    continue
+                
+                # 1b. Salva lo schema inferito per questo specifico file (per debug)
+                try:
+                    schema_dict = json.loads(df.schema.json())
+                    schema_formatted_string = json.dumps(schema_dict, indent=4)
                     base_filename = os.path.basename(file_path)
                     schema_file_path = os.path.join(schema_dir, f"schema_{base_filename}.json")
-
                     with open(schema_file_path, "w", encoding="utf-8") as f:
                         f.write(schema_formatted_string)
-                        
-                    logger.info(f"Schema per {base_filename} salvato in: {schema_file_path}")
+                    logger.info(f"Schema inferito per {base_filename} salvato in: {schema_file_path}")
+                except Exception as schema_error:
+                    logger.error(f"Impossibile salvare lo schema per il file {file_path}: {schema_error}")
 
-                    df = df.withColumn("source_file", F.lit(os.path.basename(file_path))).withColumn("source_id", F.lit(idx + 1))
-                    dataframes.append(df)
-                    logger.info(f"File caricato: {file_path} ({df.count()} righe)")
+                # 1c. NORMALIZZA il DataFrame per renderlo conforme allo schema master.
+                #     Questo è il passaggio cruciale che garantisce la coerenza.
+                df_normalizzato = self.schema_manager.normalize_dataframe_to_schema(df, master_schema)
                 
+                # 1d. Aggiungi i metadati.
+                df_normalizzato = df_normalizzato.withColumn("source_file", F.lit(os.path.basename(file_path))) \
+                                                .withColumn("source_id", F.lit(idx + 1))
+                
+                #dataframes_normalizzati.append(df_normalizzato)
+                df_normalizzato.write.mode("append").parquet(temp_parquet_dir)
+
+                dataframes_normalizzati.append(df_normalizzato)
+
+                logger.info(f"File {file_path} salvato correttamente in formato Parquet.")
+                #logger.info(f"File {file_path} processato e normalizzato con successo.")
+
             except Exception as e:
-                logger.error(f"Errore critico nel caricamento del file {file_path}: {e}", exc_info=True)
+                logger.error(f"Errore critico durante il processo del file {file_path}: {e}", exc_info=True)
                 continue
-        
-        if not dataframes:
-            logger.error("Nessun DataFrame caricato con successo.")
+                
+        if not dataframes_normalizzati:
+            logger.error("Nessun file è stato caricato e normalizzato con successo.")
             return None
 
-        # --- FASE 2: Armonizza gli schemi ---
-        logger.info("Armonizzazione degli schemi prima dell'unione...")
+        # --- FASE 2: Unisci i DataFrame, che ora sono tutti perfettamente compatibili ---
+        logger.info(f"Unione di {len(dataframes_normalizzati)} DataFrame normalizzati...")
+        # Usiamo un .union() semplice perché gli schemi sono ora identici
+        combined_df = reduce(lambda df1, df2: df1.union(df2), dataframes_normalizzati)
         
-        complex_cols_to_stringify = set()
-        for df in dataframes:
-            for field in df.schema.fields:
-                if isinstance(field.dataType, (StructType, ArrayType)):
-                    complex_cols_to_stringify.add(field.name)
-        
-        logger.info(f"Colonne complesse identificate: {list(complex_cols_to_stringify)}")
+        # --- FASE 3: Finalizza e ottieni il conteggio in modo sicuro ---
+        # try:
+        #     # Usa MEMORY_AND_DISK per evitare OutOfMemoryError.
+        #     # Spark userà la RAM e, se non basta, il disco.
+        #     combined_df.persist(StorageLevel.MEMORY_AND_DISK)
 
-        harmonized_dfs = []
-        for df in dataframes:
-            df_temp = df
-            for col_name in complex_cols_to_stringify:
-                # --- MODIFICA CHIAVE QUI ---
-                # Controlla se la colonna esiste ed è effettivamente di tipo complesso PRIMA di convertirla
-                if col_name in df_temp.columns and isinstance(df_temp.schema[col_name].dataType, (StructType, ArrayType)):
-                    df_temp = df_temp.withColumn(col_name, F.to_json(F.col(col_name)))
-            harmonized_dfs.append(df_temp)
+        #     # Ora che è persistito in modo sicuro, possiamo chiamare .count()
+        #     total_records = combined_df.count()
+        #     logger.info(f"Dataset combinato creato con successo: {total_records} righe totali")
 
-        # --- FASE 3: Esegui l'unione sicura ---
-        logger.info("Unione dei DataFrame armonizzati...")
-        try:
-            combined_df = reduce(
-                lambda df1, df2: df1.unionByName(df2, allowMissingColumns=True),
-                harmonized_dfs
-            )
+        #     # Imposta il DataFrame per le query successive
+        #     combined_df.createOrReplaceTempView("temp_data")
+        #     self._update_metadata(combined_df, f"{len(file_paths)} files combined")
+        #     self.current_dataset = combined_df
             
-            # --- FASE 4: Finalizza ---
-            combined_df = combined_df.cache()
+        #     logger.info("DataFrame finale pronto per le query.")
+        #     return combined_df
+        
+        logger.info("Lettura del dataset Parquet unificato...")
+        try:
+            combined_df = spark.read.parquet(temp_parquet_dir)
+            
+            # Ora il conteggio è un'operazione efficiente sul formato Parquet
+            total_records = combined_df.count()
+            logger.info(f"Conteggio finale riuscito. Totale record: {total_records}")
+
             combined_df.createOrReplaceTempView("temp_data")
             self._update_metadata(combined_df, f"{len(file_paths)} files combined")
             self.current_dataset = combined_df
             
-            logger.info(f"Dataset combinato creato con successo: {combined_df.count()} righe totali")
-            logger.info("\nSchema finale:\n")
-            combined_df.printSchema()
+            logger.info("DataFrame finale pronto per le query.")
             
+            # Opzionale: pulisci la cartella temporanea alla fine
+            # try:
+            #     shutil.rmtree(temp_parquet_dir)
+            #     logger.info(f"Cartella temporanea {temp_parquet_dir} rimossa.")
+            # except Exception as e:
+            #     logger.warning(f"Impossibile rimuovere la cartella temporanea: {e}")
+
             return combined_df
 
+
         except Exception as e:
-            logger.error(f"Errore finale nell'unione dei file: {e}", exc_info=True)
+            logger.error(f"Errore durante la finalizzazione del DataFrame (conteggio o persist): {e}", exc_info=True)
+            # In caso di errore, rilascia la cache se è stata creata
+            if 'combined_df' in locals():
+                combined_df.unpersist()
             return None
+        
     
     def _get_schema_for_type(self, schema_type: str, file_path: str = None) -> Optional[StructType]:
         """
