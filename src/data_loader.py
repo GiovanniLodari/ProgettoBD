@@ -12,6 +12,7 @@ from pyspark.sql.types import (
     ArrayType, BooleanType, DoubleType, IntegerType, MapType
 )
 from pyspark.sql import functions as F
+from pyspark.sql.utils import AnalysisException
 from src.spark_manager import SparkManager
 from src.config import Config
 from functools import reduce
@@ -730,6 +731,9 @@ class DataLoader:
             
             # Ora il conteggio è un'operazione efficiente sul formato Parquet
             total_records = combined_df.count()
+            
+            combined_df.show()
+
             logger.info(f"Conteggio finale riuscito. Totale record: {total_records}")
 
             combined_df.createOrReplaceTempView("temp_data")
@@ -1018,6 +1022,78 @@ class DataLoader:
                 select_exprs.append(F.lit(None).cast(target_type).alias(col_name))
                 
         return df.select(*select_exprs)
+    
+    @staticmethod
+    def clean_twitter_dataframe(df: SparkDataFrame) -> SparkDataFrame | None:
+        """
+        Pulisce un DataFrame Spark di Twitter rimuovendo le colonne predefinite non necessarie.
+        Args:
+            df (DataFrame): Il DataFrame Spark di input da pulire.
+        Returns:
+            DataFrame | None: Il DataFrame pulito. Restituisce None se si verifica un errore.
+        """
+        # Lista delle colonne da eliminare (più facile da manutenere qui)
+        columns_to_drop = [
+            "id", "lang", "in_reply_to_status_id", "quoted_status_id", "possibly_sensitive", "source", "truncated",
+            "favorited", "retweeted", "geo", "filter_level", "timestamp_ms",
+            "contributors", "extended_entities", "in_reply_to_screen_name",
+            "in_reply_to_status_id_str", "in_reply_to_user_id",
+            "in_reply_to_user_id_str", "is_quote_status", "entities"
+        ]
+
+        user_columns_to_drop = [
+            "id", "listed_count", "created_at", "utc_offset", "time_zone", "url", "entities",
+            "geo_enabled", "contributors_enabled", "is_translator", "favourites_count",
+            "is_translation_enabled", "profile_background_color", "statuses_count",
+            "profile_background_image_url", "profile_background_image_url_https",
+            "profile_background_tile", "profile_image_url", "profile_image_url_https",
+            "profile_banner_url", "profile_link_color", "profile_sidebar_border_color",
+            "profile_sidebar_fill_color", "profile_text_color",
+            "profile_use_background_image", "has_extended_profile",
+            "default_profile", "default_profile_image", "protected",
+            "translator_type", "following", "follow_request_sent", "notifications"
+        ]
+
+        try:
+            # 1. PULIZIA DEL LIVELLO PRINCIPALE (come prima)
+            existing_top_level_cols = [col for col in columns_to_drop if col in df.columns]
+            cleaned_df = df.drop(*existing_top_level_cols)
+            
+            # 2. PULIZIA DEI LIVELLI ANNIDATI (NUOVO PASSAGGIO)
+            logger.info("Pulizia delle colonne annidate 'retweeted_status' e 'quoted_status'...")
+            
+            # Usiamo F.when per gestire in sicurezza i casi in cui i campi sono NULL
+            cleaned_df = cleaned_df.withColumn(
+                "retweeted_status",
+                F.when(
+                    F.col("retweeted_status").isNotNull(),
+                    F.col("retweeted_status").dropFields(*columns_to_drop)
+                ).otherwise(F.lit(None)) # Lascia NULL se era già NULL
+            ).withColumn(
+                "quoted_status",
+                F.when(
+                    F.col("quoted_status").isNotNull(),
+                    F.col("quoted_status").dropFields(*columns_to_drop)
+                ).otherwise(F.lit(None))
+            ).withColumn(
+                "user",
+                F.when(
+                    F.col("user").isNotNull(),
+                    F.col("user").dropFields(*user_columns_to_drop)
+                ).otherwise(F.lit(None))
+            )
+
+            logger.info("Pulizia completata con successo a tutti i livelli.")
+            return cleaned_df
+
+        except AnalysisException as e:
+            # Errore specifico di Spark, ad es. se una colonna non viene trovata
+            logger.error(f"Errore di analisi Spark durante la pulizia del DataFrame: {e}", exc_info=True)
+            return None
+        except Exception as e:
+            # Qualsiasi altro errore imprevisto
+            logger.error(f"Errore imprevisto durante la pulizia del DataFrame: {e}", exc_info=True)
+            return None
 
 
 class FileHandler:

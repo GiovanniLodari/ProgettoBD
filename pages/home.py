@@ -18,8 +18,9 @@ import traceback
 
 # Import delle utilities Spark (presumendo che esistano i file src/spark_manager.py e src/analytics.py)
 from src.spark_manager import SparkManager, should_use_spark, get_file_size_mb, detect_data_schema
-from src.data_loader import DataLoader, FileHandler 
+from src.data_loader import DataLoader, FileHandler
 from src.analytics import DisasterAnalytics
+from pyspark.sql import DataFrame as SparkDataFrame
 
 # --- Configurazione del Logger ---
 # Il logger è configurato per scrivere su console (per Streamlit) e su un file
@@ -389,26 +390,58 @@ def main():
                         )
 
                     except Exception as e:
-                        # 2. Il blocco 'except' gestisce QUALSIASI fallimento avvenuto nel 'try'
                         logger.error(f"Caricamento con Spark fallito. Errore: {e}", exc_info=True)
                         st.error(f"❌ Caricamento con Spark fallito. L'app tenterà di continuare con Pandas.")
                         st.info("Controlla il file app.log per i dettagli tecnici dell'errore.")
-                        # La variabile rimane False
+
 
                     else:
                         # 3. Il blocco 'else' viene eseguito SOLO SE il 'try' ha avuto successo
-                        logger.info(f"Dati caricati con Spark. Totale record: {combined_data.count()}.")
-                        st.session_state.data = combined_data
-                        #st.session_state.load_info = load_info
-                        st.session_state.is_spark = True
-                        st.session_state.datasets_loaded = True
-                        st.session_state.performance_info = {
-                            'cores': spark.sparkContext.defaultParallelism,
-                            'memory': "Dynamic",
-                            'engine': 'Apache Spark'
-                        }
-                        st.success(f"✅ Loaded with Spark: {combined_data.count():,} records from {len(uploaded_files)} files")
-                        spark_successful = True # Imposta il flag di successo
+                        if not isinstance(combined_data, SparkDataFrame):
+                            logger.error("Conversione del DataFrame Pandas in DataFrame Spark.")
+                            try:
+                                spark_df = spark.createDataFrame(combined_data)
+                                combined_data = spark_df
+                            except Exception as e:
+                                logger.error(f"Errore nella conversione del DataFrame: {e}", exc_info=True)
+                                return None
+                        with st.spinner('🧹 Cleaning the dataset...'):
+                            cleaned_data = DataLoader.clean_twitter_dataframe(combined_data)
+
+                        # Controlla se la pulizia è andata a buon fine
+                        if cleaned_data:
+                            # Se la pulizia ha successo, usa il DataFrame pulito
+                            logger.info("Pulizia del DataFrame riuscita.")
+                            st.success("✅ Dataset cleaned successfully!")
+                            st.session_state.data = cleaned_data
+                            cleaned_data.show()
+
+                            logger.info("Visualizzazione della tabella User.")
+                            cleaned_data.select("user.*").show()
+
+                            logger.info("Visualizzazione della tabella retweeted_status.")
+                            cleaned_data.select("retweeted_status.*").show()
+
+                            logger.info("Visualizzazione della tabella quoted_status.")
+                            cleaned_data.select("quoted_status.*").show()
+                        else:
+                            
+                            logger.warning("La pulizia è fallita. Si procede con i dati non puliti.")
+                            st.error("❌ Cleaning failed. Using raw data. Check app.log for details.")
+                            st.session_state.data = combined_data
+
+                            #st.session_state.load_info = load_info
+                            st.session_state.is_spark = True
+                            st.session_state.datasets_loaded = True
+                            st.session_state.performance_info = {
+                                'cores': spark.sparkContext.defaultParallelism,
+                                'memory': "Dynamic",
+                                'engine': 'Apache Spark'
+                            }
+                            # Aggiorna il messaggio di successo per riflettere il numero di record finali
+                            final_record_count = st.session_state.data.count()
+                            st.success(f"✅ Ready to analyze: {final_record_count:,} records from {len(uploaded_files)} files")
+                            spark_successful = True
                 
                 if not use_spark:
                     logger.info("Caricamento con Pandas in corso.")
