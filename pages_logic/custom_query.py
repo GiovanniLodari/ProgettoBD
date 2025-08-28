@@ -228,6 +228,52 @@ def show_query_templates_tab(query_engine, dataset):
     
     # Template organizzati per categoria
     templates = {
+        "📊 Analisi Twitter": {
+            "Conteggio Tipi di Tweet": f"""
+                SELECT
+                    COUNT(*) AS total_tweets,
+                    COUNT(CASE WHEN retweeted_status IS NOT NULL THEN 1 END) AS total_retweets,
+                    COUNT(CASE WHEN quoted_status_id_str IS NOT NULL AND retweeted_status IS NULL THEN 1 END) AS total_quotes,
+                    COUNT(CASE WHEN in_reply_to_status_id_str IS NOT NULL AND retweeted_status IS NULL THEN 1 END) AS total_replies
+                FROM {DatabaseConfig.TEMP_VIEW_NAME}
+                            """.strip(),
+                            
+            "Like e Retweet Medi per Utente (Top 20)": f"""
+                SELECT
+                    user.screen_name AS author,
+                    AVG(favorite_count) AS average_likes,
+                    AVG(retweet_count) AS average_retweets,
+                    COUNT(*) AS total_original_tweets
+                FROM {DatabaseConfig.TEMP_VIEW_NAME}
+                WHERE
+                    retweeted_status IS NULL
+                GROUP BY
+                    user.screen_name
+                ORDER BY
+                    average_likes DESC
+                LIMIT 20
+                            """.strip(),    
+            "Like e Retweet Medi per Tipo di Tweet": f"""
+                SELECT
+                    tweet_type,
+                    AVG(likes) AS average_likes,
+                    AVG(retweets) AS average_retweets
+                FROM (
+                    SELECT
+                        CASE
+                            WHEN retweeted_status IS NOT NULL THEN 'Retweet'
+                            WHEN quoted_status_id_str IS NOT NULL THEN 'Quote'
+                            WHEN in_reply_to_status_id_str IS NOT NULL THEN 'Reply'
+                            ELSE 'Original Tweet'
+                        END AS tweet_type,
+                        COALESCE(retweeted_status.favorite_count, favorite_count) AS likes,
+                        COALESCE(retweeted_status.retweet_count, retweet_count) AS retweets
+                    FROM {DatabaseConfig.TEMP_VIEW_NAME}
+                ) AS classified_tweets
+                GROUP BY
+                    tweet_type
+                            """.strip(),
+        },
         "🔍 Query di Base": {
             "Visualizza prime 10 righe": f"SELECT * FROM {DatabaseConfig.TEMP_VIEW_NAME} LIMIT 10",
             "Conta tutti i record": f"SELECT COUNT(*) as total_records FROM {DatabaseConfig.TEMP_VIEW_NAME}",

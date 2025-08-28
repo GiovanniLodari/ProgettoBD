@@ -1,0 +1,18 @@
+QUERY:
+- Geolocalizzazione (con coordinate, se disponibili) dei disastri naturali tracciata in merito a Distribuzione geografica degli utenti (location) – capire da quali aree arrivano i dati
+- Conteggio dei tweet nel tempo (trend giornaliero/ora per identificare picchi di discussione)
+- I tweet degli utenti con molti follower o di utenti verificati risultano maggiormente influenti rispetto agli altri? (Analisi dei rapporti followers/friends per capire l’influenza degli utenti)
+- Parole più utilizzate (es. le parole utilizzate possono aumentare la visibilità del tweet?) (Analisi testuale sui contenuti dei tweet (es. presenza di parole chiave legate a disastri naturali))
+- Tipologia di contenuto: originale vs retweet vs quote (retweeted_status, quoted_status) (es. Retweet più diffusi (identificare i tweet più virali nei casi di pericolo magari))
+- Analisi temporale (Volume di tweet per giorno/ora) (Eventi di disastro correlati a picchi di tweet) (Possibilità di costruire grafici temporali delle interazioni)
+- Numero totale di tweet, retweet, citazioni, reply
+- Numero medio di like e retweet per utente o per tipo di tweet
+
+
+
+FRONTEND:
+- Filtri dinamici come:
+   1. Filtrare per utente (screen_name, verified)
+   2. Filtrare per data / intervallo temporale
+   3. Filtrare per parola chiave o hashtag nel tweet
+   4. Mostrare grafici di trend temporale, top utenti o top tweet

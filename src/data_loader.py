@@ -3,6 +3,7 @@ Versione potenziata del SchemaManager che mantiene tutti gli schemi esistenti
 e aggiunge il fallback automatico a String per campi problematici
 """
 import os
+import streamlit as st
 import pandas as pd
 import logging
 from typing import Optional, Union, List
@@ -633,6 +634,8 @@ class DataLoader:
             logger.error("Nessun file fornito per il caricamento.")
             return None
 
+        progress_bar = st.progress(0)
+
         # --- SETUP: Definisci lo schema master e la cartella di output ---
         master_schema = self.schema_manager.get_twitter_schema()
         if not master_schema:
@@ -694,6 +697,9 @@ class DataLoader:
                 logger.info(f"File {file_path} salvato correttamente in formato Parquet.")
                 #logger.info(f"File {file_path} processato e normalizzato con successo.")
 
+                progress = int((idx+1)/len(file_paths) * 100)
+                progress_bar.progress(progress)
+
             except Exception as e:
                 logger.error(f"Errore critico durante il processo del file {file_path}: {e}", exc_info=True)
                 continue
@@ -726,6 +732,8 @@ class DataLoader:
         #     return combined_df
         
         logger.info("Lettura del dataset Parquet unificato...")
+        progress_bar.empty()  # rimuove la barra
+        st.success("✅ Lettura dei file completata. Unione in corso...")
         try:
             combined_df = spark.read.parquet(temp_parquet_dir)
             
