@@ -16,6 +16,7 @@ sys.path.insert(0, str(src_path))
 from src.config import Config
 from src.spark_manager import cleanup_spark
 import logging
+from pages_logic.home import main as home_main
 
 # Configurazione logging
 logging.basicConfig(level=logging.INFO)
@@ -29,65 +30,10 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Import delle pagine
-# try:
-#     from pages.home import show_home_page
-#     from pages.data_explorer import show_data_explorer
-#     from pages.analytics_page import show_analytics_page
-#     from pages.custom_query import show_custom_query_page
-# except ImportError as e:
-#     st.error(f"Errore nell'import delle pagine: {str(e)}")
-#     st.stop()
-
 def main():
     """Funzione principale dell'applicazione"""
     
-    # Sidebar per navigazione
-    st.sidebar.title("🧭 Navigazione")
-    
-    pages = {
-        "🏠 Home": "home",
-        "📊 Esplora Dataset": "explorer", 
-        "📈 Analisi Avanzate": "analytics",
-        "🔍 Query Personalizzate": "query"
-    }
-    
-    # Selezione pagina
-    selected_page = st.sidebar.selectbox(
-        "Seleziona una pagina:",
-        list(pages.keys())
-    )
-    
-    page_key = pages[selected_page]
-    
-    # Informazioni nella sidebar
-    st.sidebar.markdown("---")
-    st.sidebar.markdown("### ℹ️ Informazioni")
-    st.sidebar.markdown("""
-    **Tecnologie utilizzate:**
-    - Apache Spark per elaborazione dati
-    - Streamlit per interfaccia web
-    - Plotly per visualizzazioni
-    
-    **Formati supportati:**
-    - CSV, JSON, Parquet
-    - File compressi (.gz)
-    """)
-    
-    # Mostra la pagina selezionata
-    # try:
-    #     if page_key == "home":
-    #         show_home_page()
-    #     elif page_key == "explorer":
-    #         show_data_explorer()
-    #     elif page_key == "analytics":
-    #         show_analytics_page()
-    #     elif page_key == "query":
-    #         show_custom_query_page()
-    # except Exception as e:
-    #     st.error(f"Errore nel caricamento della pagina: {str(e)}")
-    #     logger.error(f"Errore pagina {page_key}: {str(e)}")
-    
+       
     # Footer
     st.sidebar.markdown("---")
     st.sidebar.markdown("""
@@ -96,6 +42,8 @@ def main():
     Powered by Apache Spark & Streamlit
     </div>
     """, unsafe_allow_html=True)
+
+    home_main()
 
 def cleanup():
     """Pulizia risorse all'uscita"""

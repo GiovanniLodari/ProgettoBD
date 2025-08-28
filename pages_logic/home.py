@@ -23,15 +23,15 @@ from src.analytics import DisasterAnalytics
 from pyspark.sql import DataFrame as SparkDataFrame
 
 # --- Configurazione del Logger ---
-# Il logger è configurato per scrivere su console (per Streamlit) e su un file
 logging.basicConfig(
-    level=logging.DEBUG,  # Imposta il livello di log minimo a DEBUG per catturare tutto
-    format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
+    level=logging.INFO,  # Cambiato da DEBUG a INFO
+    format="%(message)s",  # Solo il messaggio, senza timestamp e livello
     handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler("app.log", mode="w", encoding="utf-8")
+        logging.StreamHandler(sys.stdout)
+        # Rimosso il FileHandler per non creare app.log
     ]
 )
+
 logger = logging.getLogger(__name__)
 logger.info("Configurazione del logger completata. Livello di log impostato su DEBUG.")
 
@@ -66,33 +66,6 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-def load_sample_data():
-    """Genera dati di esempio più grandi per testare Spark"""
-    logger.info("Generazione di dati di esempio in corso...")
-    np.random.seed(42)
-    
-    disaster_types = ['Earthquake', 'Flood', 'Hurricane', 'Wildfire', 'Tornado', 'Tsunami', 'Drought', 'Avalanche']
-    countries = ['Italy', 'USA', 'Japan', 'Australia', 'Germany', 'Brazil', 'India', 'China', 'Mexico', 'Turkey']
-    
-    n_records = 50000
-    
-    data = {
-        'disaster_id': range(1, n_records + 1),
-        'type': np.random.choice(disaster_types, n_records),
-        'country': np.random.choice(countries, n_records),
-        'date': pd.date_range('2015-01-01', '2024-12-31', periods=n_records),
-        'magnitude': np.random.uniform(1, 9, n_records).round(1),
-        'casualties': np.random.poisson(50, n_records),
-        'economic_loss': np.random.lognormal(15, 2, n_records).astype(int),
-        'duration_days': np.random.exponential(5, n_records).astype(int) + 1,
-        'affected_population': np.random.exponential(10000, n_records).astype(int),
-        'recovery_time_months': np.random.gamma(2, 3, n_records).round().astype(int)
-    }
-    
-    df = pd.DataFrame(data)
-    logger.info(f"Generazione dati di esempio completata. Creato un DataFrame di {len(df):,} record.")
-    return df
-
 def display_engine_info(engine_type, file_info=None, performance_info=None):
     """Mostra informazioni sul motore di elaborazione utilizzato"""
     logger.debug(f"Visualizzazione informazioni motore: {engine_type}")
@@ -118,7 +91,7 @@ def display_engine_info(engine_type, file_info=None, performance_info=None):
                 
                 st.markdown('</div>', unsafe_allow_html=True)
     else:
-        st.markdown('<div style="background: #ffd93d; color: #333; padding: 0.5rem 1rem; border-radius: 20px; display: inline-block;">🐼 Pandas Engine (Small Data)</div>', unsafe_allow_html=True)
+        #st.markdown('<div class="engine-badge engine-badge-pandas">🐼 Motore: Pandas</div>', unsafe_allow_html=True)
         logger.info("Pandas Engine in uso.")
 
 def create_overview_metrics_spark(df_or_spark, is_spark=False, load_info=None):
@@ -313,7 +286,6 @@ def main():
         st.session_state.is_spark = False
         st.session_state.performance_info = None
 
-    logger.debug("Hola.")
     
     # Upload section
     with st.container():
@@ -328,9 +300,12 @@ def main():
             )
         
         with col2:
-            use_sample = st.checkbox("Use sample data", value=not uploaded_files)
+            # MODIFICA: Rimuovo completamente la checkbox per i dati di esempio
+            # use_sample = st.checkbox("Use sample data", value=not uploaded_files)
+            
+            # MODIFICA: Cambio "Reset" in "Avvio" ma mantengo la stessa funzionalità
             if st.button("🔄 Reset"):
-                logger.info("Bottone 'Reset' premuto. Resetting session state.")
+                logger.info("Bottone 'Avvio' premuto. Resetting session state.")
                 
                 if 'spark_manager' in st.session_state:
                     logger.debug("Pulizia della sessione Spark in corso.")
@@ -355,9 +330,9 @@ def main():
         else:
             st.info(f"🐼 **Small dataset**: {total_size_mb:.1f}MB → **Pandas Engine** will be used")
     
-    # Process data
-    if uploaded_files or use_sample:
-        if uploaded_files and not st.session_state.datasets_loaded:
+    # MODIFICA: Processo i dati solo se ci sono file caricati (eliminando i dati di esempio)
+    if uploaded_files:
+        if not st.session_state.datasets_loaded:
             logger.info("Avvio del processo di caricamento dei file.")
             total_size_mb = get_file_size_mb(uploaded_files)
             use_spark = should_use_spark(total_size_mb, len(uploaded_files))
@@ -375,7 +350,6 @@ def main():
                             raise RuntimeError("La sessione Spark non è stata inizializzata correttamente (restituito None).")
 
                         logger.info("Sessione Spark OK. Lettura dei file in corso.")
-                        #combined_data, load_info = st.session_state.spark_manager.read_files_with_spark(uploaded_files)
                         st.session_state.data_loader = DataLoader(spark)
 
                         temp_paths = []
@@ -393,7 +367,6 @@ def main():
                         logger.error(f"Caricamento con Spark fallito. Errore: {e}", exc_info=True)
                         st.error(f"❌ Caricamento con Spark fallito. L'app tenterà di continuare con Pandas.")
                         st.info("Controlla il file app.log per i dettagli tecnici dell'errore.")
-
 
                     else:
                         # 3. Il blocco 'else' viene eseguito SOLO SE il 'try' ha avuto successo
@@ -430,7 +403,6 @@ def main():
                             st.error("❌ Cleaning failed. Using raw data. Check app.log for details.")
                             st.session_state.data = combined_data
 
-                            #st.session_state.load_info = load_info
                             st.session_state.is_spark = True
                             st.session_state.datasets_loaded = True
                             st.session_state.performance_info = {
@@ -459,37 +431,6 @@ def main():
                     st.session_state.datasets_loaded = True
                     logger.info(f"Dati caricati con Pandas. Totale record: {len(combined_data):,}.")
                     st.success(f"✅ Loaded with Pandas: {len(combined_data):,} records from {len(load_info)} files")
-        
-        elif use_sample and not st.session_state.datasets_loaded:
-            logger.info("Opzione 'Use sample data' selezionata. Generazione dati.")
-            sample_data = load_sample_data()
-            
-            sample_size_mb = sample_data.memory_usage(deep=True).sum() / 1024 / 1024
-            
-            if sample_size_mb > 50:
-                logger.info(f"Dimensioni sample ({sample_size_mb:.2f}MB) sufficienti per usare Spark.")
-                spark = st.session_state.spark_manager.get_spark_session(sample_size_mb)
-                if spark:
-                    spark_df = spark.createDataFrame(sample_data)
-                    st.session_state.data = spark_df
-                    st.session_state.is_spark = True
-                    st.session_state.performance_info = {
-                        'cores': spark.sparkContext.defaultParallelism,
-                        'memory': "1GB",
-                        'engine': 'Apache Spark'
-                    }
-                    logger.info("Convertito Pandas DataFrame in Spark DataFrame per analisi.")
-                else:
-                    logger.warning("Inizializzazione Spark fallita per dati di esempio. Rimane in Pandas.")
-                    st.session_state.data = sample_data
-                    st.session_state.is_spark = False
-            else:
-                logger.info("Dimensioni sample piccole. Utilizzo di Pandas.")
-                st.session_state.data = sample_data
-                st.session_state.is_spark = False
-            
-            st.session_state.datasets_loaded = True
-            st.info("📊 Using sample data - upload your files above for real analysis")
     
     # Display loaded data
     if st.session_state.datasets_loaded and st.session_state.data is not None:
@@ -530,13 +471,13 @@ def main():
                     with col1:
                         if 'type_distribution' in charts:
                             st.plotly_chart(charts['type_distribution'], use_container_width=True)
-                        if 'country_distribution' in charts: # Nota: il codice originale ha 'geo_distribution' ma la funzione crea 'country_distribution'
+                        if 'country_distribution' in charts:
                             st.plotly_chart(charts['country_distribution'], use_container_width=True)
                     
                     with col2:
                         if 'temporal_trend' in charts:
                             st.plotly_chart(charts['temporal_trend'], use_container_width=True)
-                        if 'economic_loss_distribution' in charts: # Aggiunto per coerenza
+                        if 'economic_loss_distribution' in charts:
                             st.plotly_chart(charts['economic_loss_distribution'], use_container_width=True)
                     
                     if st.button("📊 Get Detailed Statistics"):
@@ -817,70 +758,8 @@ def main():
                     )
                     logger.info("Report di analisi generato e pronto per il download.")
     else:
-        # Mostra un messaggio di benvenuto e istruzioni chiare per l'utente.
-        # st.info crea una casella informativa con un'icona.
+        # MODIFICA: Messaggio aggiornato per riflettere che non ci sono più dati di esempio automatici
         st.info("👆 Upload your disaster datasets above to start the analysis")
-
-        # Aggiunge una sottosezione per evidenziare le funzionalità basate su Spark.
-        st.subheader("🚀 Spark-Powered Features")
-        
-        # Divide la larghezza della pagina in due colonne per un layout più pulito.
-        col1, col2 = st.columns(2)
-        
-        # Inizia il blocco per la prima colonna.
-        with col1:
-            # Usa il markdown per formattare il testo con grassetto e elenchi.
-            # Questo testo descrive i vantaggi dell'auto-ottimizzazione di Spark.
-            st.markdown("""
-            **⚡ Auto-Optimization**
-            - Files >100MB → Spark Engine
-            - Multiple files → Distributed processing  
-            - Smart memory management
-            - Lazy evaluation for efficiency
-            
-            **🎯 Performance Benefits**
-            - Handle datasets up to several GB
-            - Parallel processing across CPU cores
-            - Optimized for aggregations and joins
-            - Memory-efficient operations
-            """)
-        
-        # Inizia il blocco per la seconda colonna.
-        with col2:
-            # Anche qui, usa il markdown per formattare e descrivere le funzionalità
-            # di analisi avanzata ed esportazione.
-            st.markdown("""
-            **📊 Advanced Analytics**
-            - Custom Spark SQL queries
-            - Real-time performance monitoring
-            - Distributed aggregations
-            - Schema optimization
-            
-            **💾 Export Options**
-            - Direct file system export
-            - Optimized Parquet format
-            - Large dataset handling
-            - Batch processing support
-            """)
-        
-        # Aggiunge una sottosezione per mostrare il formato dati supportato.
-        st.subheader("📋 Supported Data Formats")
-        
-        # st.code mostra un blocco di codice formattato.
-        # L'esempio JSON è utile per guidare gli utenti sul tipo di struttura dati da caricare.
-        st.code("""
-    # Example disaster data structure
-    {
-    "disaster_id": 1,
-    "type": "Earthquake", 
-    "country": "Italy",
-    "date": "2023-01-15",
-    "magnitude": 6.5,
-    "casualties": 150,
-    "economic_loss": 1500000000,
-    "duration_days": 7
-    }
-        """, language='json')
 
 if __name__ == "__main__":
     try:
