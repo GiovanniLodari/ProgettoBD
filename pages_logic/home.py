@@ -21,6 +21,7 @@ from src.spark_manager import SparkManager, should_use_spark, get_file_size_mb, 
 from src.data_loader import DataLoader, FileHandler
 from src.analytics import DisasterAnalytics
 from pyspark.sql import DataFrame as SparkDataFrame
+from pages_logic.custom_query import show_custom_query_page
 
 # --- Configurazione del Logger ---
 logging.basicConfig(
@@ -277,7 +278,6 @@ def render_tabs():
     is_spark = st.session_state.is_spark
         
     create_overview_metrics_spark(data, is_spark, st.session_state.load_info)
-        
     st.divider()
         
     tab1, tab2, tab3, tab4 = st.tabs(["📊 Analysis", "🔍 Custom Query", "📈 Advanced", "💾 Export"])
@@ -347,70 +347,71 @@ def render_tabs():
 
     with tab2:
         logger.info("Passaggio al Tab 'Custom Query'.")
-        st.subheader("🔍 Custom Aggregation")
-        try:
-            if is_spark:
-                st.info("⚡ Using Spark SQL for high-performance aggregations")
-                logger.info("Interfaccia di aggregazione personalizzata per Spark.")
+        show_custom_query_page()
+        # st.subheader("🔍 Custom Aggregation")
+        # try:
+        #     if is_spark:
+        #         st.info("⚡ Using Spark SQL for high-performance aggregations")
+        #         logger.info("Interfaccia di aggregazione personalizzata per Spark.")
                     
-                col1, col2, col3, col4 = st.columns(4)
+        #         col1, col2, col3, col4 = st.columns(4)
 
-                with col1:
-                    group_col = st.selectbox("Group by:", data.columns, key="agg_group_col")
+        #         with col1:
+        #             group_col = st.selectbox("Group by:", data.columns, key="agg_group_col")
                     
-                with col2:
-                    from pyspark.sql.types import IntegerType, LongType, FloatType, DoubleType
-                    numeric_cols = [field.name for field in data.schema.fields 
-                                    if isinstance(field.dataType, (IntegerType, LongType, FloatType, DoubleType))]
-                    available_cols = ['count'] + numeric_cols
-                    agg_col = st.selectbox("Aggregate:", available_cols, key="agg_col")
+        #         with col2:
+        #             from pyspark.sql.types import IntegerType, LongType, FloatType, DoubleType
+        #             numeric_cols = [field.name for field in data.schema.fields 
+        #                             if isinstance(field.dataType, (IntegerType, LongType, FloatType, DoubleType))]
+        #             available_cols = ['count'] + numeric_cols
+        #             agg_col = st.selectbox("Aggregate:", available_cols, key="agg_col")
                     
-                with col3:
-                    if agg_col != 'count':
-                        agg_func = st.selectbox("Function:", ['sum', 'avg', 'max', 'min'], key="agg_func")
-                    else:
-                        agg_func = 'count'
+        #         with col3:
+        #             if agg_col != 'count':
+        #                 agg_func = st.selectbox("Function:", ['sum', 'avg', 'max', 'min'], key="agg_func")
+        #             else:
+        #                 agg_func = 'count'
                     
-                with col4:
-                    if st.button("🚀 Run Spark Query", type="primary"):
-                        logger.info(f"Esecuzione query Spark custom: GROUP BY {group_col}, AGGREGATE {agg_func} on {agg_col}.")
-                        with st.spinner("Running Spark aggregation..."):
-                            result = st.session_state.spark_manager.create_aggregation_spark(
-                                data, group_col, agg_col if agg_col != 'count' else None, agg_func
-                            )
+        #         with col4:
+        #             if st.button("🚀 Run Spark Query", type="primary"):
+        #                 logger.info(f"Esecuzione query Spark custom: GROUP BY {group_col}, AGGREGATE {agg_func} on {agg_col}.")
+        #                 with st.spinner("Running Spark aggregation..."):
+        #                     result = st.session_state.spark_manager.create_aggregation_spark(
+        #                         data, group_col, agg_col if agg_col != 'count' else None, agg_func
+        #                     )
                             
-                            if result is not None and not result.empty:
-                                logger.info("Query Spark eseguita con successo. Visualizzazione risultati.")
-                                col_left, col_right = st.columns(2)
+        #                     if result is not None and not result.empty:
+        #                         logger.info("Query Spark eseguita con successo. Visualizzazione risultati.")
+        #                         col_left, col_right = st.columns(2)
                                     
-                                with col_left:
-                                    st.subheader("Results")
-                                    st.dataframe(result, use_container_width=True)
+        #                         with col_left:
+        #                             st.subheader("Results")
+        #                             st.dataframe(result, use_container_width=True)
                                     
-                                with col_right:
-                                    st.subheader("Visualization")
-                                    fig = px.bar(
-                                        result.head(10),
-                                        x=result.columns[-1],
-                                        y=result.columns[0],
-                                        orientation='h',
-                                        title=f"{agg_func.title()} of {agg_col} by {group_col}",
-                                        color=result.columns[-1],
-                                        color_continuous_scale="viridis"
-                                    )
-                                    st.plotly_chart(fig, use_container_width=True)
+        #                         with col_right:
+        #                             st.subheader("Visualization")
+        #                             fig = px.bar(
+        #                                 result.head(10),
+        #                                 x=result.columns[-1],
+        #                                 y=result.columns[0],
+        #                                 orientation='h',
+        #                                 title=f"{agg_func.title()} of {agg_col} by {group_col}",
+        #                                 color=result.columns[-1],
+        #                                 color_continuous_scale="viridis"
+        #                             )
+        #                             st.plotly_chart(fig, use_container_width=True)
                                     
-                                st.success(f"✅ Query completed using Spark distributed processing")
-                            else:
-                                logger.warning("La query Spark ha prodotto un risultato vuoto.")
-                                st.warning("La query non ha prodotto risultati.")
-            else:
-                logger.info("Interfaccia di aggregazione personalizzata per Pandas.")
-                st.info("🐼 Using Pandas for aggregation")
+        #                         st.success(f"✅ Query completed using Spark distributed processing")
+        #                     else:
+        #                         logger.warning("La query Spark ha prodotto un risultato vuoto.")
+        #                         st.warning("La query non ha prodotto risultati.")
+        #     else:
+        #         logger.info("Interfaccia di aggregazione personalizzata per Pandas.")
+        #         st.info("🐼 Using Pandas for aggregation")
                 
-        except Exception as e:
-            logger.error(f"Errore durante l'esecuzione della query SQL: {e}", exc_info=True)
-            st.error(f"SQL Error: {e}")
+        # except Exception as e:
+        #     logger.error(f"Errore durante l'esecuzione della query SQL: {e}", exc_info=True)
+        #     st.error(f"SQL Error: {e}")
             
     with tab3:
         logger.info("Passaggio al Tab 'Advanced'.")
