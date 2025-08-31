@@ -1,13 +1,24 @@
 QUERY:
 - Geolocalizzazione (con coordinate, se disponibili) dei disastri naturali tracciata in merito a Distribuzione geografica degli utenti (location) – capire da quali aree arrivano i dati
 - Conteggio dei tweet nel tempo (trend giornaliero/ora per identificare picchi di discussione)
-- I tweet degli utenti con molti follower o di utenti verificati risultano maggiormente influenti rispetto agli altri? (Analisi dei rapporti followers/friends per capire l’influenza degli utenti)
+
+- I tweet degli utenti con molti follower o di utenti verificati risultano maggiormente influenti rispetto agli altri? (Analisi dei rapporti followers/friends per capire l’influenza degli utenti): quali sono stati i tweet più rilevanti durante l'uragano di Harvey??
+SELECT id_str AS Id, user.name AS utente, favorite_count AS MiPiace, reply_count AS NumeroRisposte, retweet_count as NumeroRetweet, quote_count AS NumeroCitazioni, (favorite_count + reply_count + retweet_count + quote_count) AS InterazioniTotali
+FROM disasters 
+ORDER BY InterazioniTotali DESC
+
+
 - Parole più utilizzate (es. le parole utilizzate possono aumentare la visibilità del tweet?) (Analisi testuale sui contenuti dei tweet (es. presenza di parole chiave legate a disastri naturali))
 - Tipologia di contenuto: originale vs retweet vs quote (retweeted_status, quoted_status) (es. Retweet più diffusi (identificare i tweet più virali nei casi di pericolo magari))
 - Analisi temporale (Volume di tweet per giorno/ora) (Eventi di disastro correlati a picchi di tweet) (Possibilità di costruire grafici temporali delle interazioni)
 - Numero totale di tweet, retweet, citazioni, reply
-- Numero medio di like e retweet per utente o per tipo di tweet
+- Numero medio di like e retweet per utente o per tipo di tweet -> more: individua possibili bot
 
+- Chi sono gli autori originali che, una volta retwittati, hanno generato il maggior engagement in termini di 'Mi Piace' totali?
+SELECT retweeted_status.user.name, retweeted_status.user.screen_name, MAX(retweeted_status.user.followers_count) as Followers,  MAX(retweeted_status.user.friends_count) as Friends, Count(retweeted_status.id_str) as NumeroTweet, SUM(retweeted_status.favorite_count) as Mi_Piace_Totali
+FROM disasters
+GROUP by  retweeted_status.user.name, retweeted_status.user.screen_name
+ORDER BY  Mi_Piace_Totali DESC
 
 
 FRONTEND:
@@ -16,3 +27,4 @@ FRONTEND:
    2. Filtrare per data / intervallo temporale
    3. Filtrare per parola chiave o hashtag nel tweet
    4. Mostrare grafici di trend temporale, top utenti o top tweet
+   5. Limita risultati non funziona con la show (che mostra max 20 righe)
