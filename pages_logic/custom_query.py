@@ -363,39 +363,40 @@ def show_simplified_custom_query_page():
 def show_dataset_info_safe(dataset):
     """Mostra informazioni dataset con gestione errori"""
     with st.expander("Informazioni Dataset"):
-        if dataset is not None:
-            row_count = dataset.count()
-            col1, col2 = st.columns([2, 1])
-            with st.spinner("Caricamento informazioni dataset..."):
-                with col1:
-                    st.subheader("Schema Colonne:")
-                    try:
-                        # Mostra schema in modo sicuro
-                        for i, field in enumerate(dataset.schema.fields):
-                            col_type = field.dataType.simpleString()
-                            is_complex = RobustDataConverter._is_complex_type(field.dataType)
-                            
-                            if is_complex:
-                                st.write(f"`{field.name}` ({col_type}) ⚠️")
-                            else:
-                                st.write(f"`{field.name}` ({col_type})")
-                            
-                            if i > 15:  # Limita visualizzazione
-                                remaining = len(dataset.schema.fields) - i - 1
-                                if remaining > 0:
-                                    st.write(f"... e altre {remaining} colonne")
-                                break
-                    except Exception as e:
-                        st.write(f"Errore nella lettura schema: {e}")
-                        st.write("Colonne disponibili:", ", ".join(dataset.columns[:10]))
-                
-                with col2:
-                    st.write("**Nome Tabella SQL:**", f"`{DatabaseConfig.TEMP_VIEW_NAME}`")
-                    try:
-                        st.write("**Numero Righe:**", f"{row_count:,}")
-                    except Exception as e:
-                        st.write("**Numero Righe:**", f"Errore nel conteggio: {e}")
-                    st.write("**Numero Colonne:**", len(dataset.columns))
+        with st.spinner("Caricamento informazioni dataset..."):
+            if dataset is not None:
+                row_count = dataset.count()
+                col1, col2 = st.columns([2, 1])
+                with st.spinner("Caricamento informazioni dataset..."):
+                    with col1:
+                        st.subheader("Schema Colonne:")
+                        try:
+                            # Mostra schema in modo sicuro
+                            for i, field in enumerate(dataset.schema.fields):
+                                col_type = field.dataType.simpleString()
+                                is_complex = RobustDataConverter._is_complex_type(field.dataType)
+                                
+                                if is_complex:
+                                    st.write(f"`{field.name}` ({col_type}) ⚠️")
+                                else:
+                                    st.write(f"`{field.name}` ({col_type})")
+                                
+                                if i > 15:  # Limita visualizzazione
+                                    remaining = len(dataset.schema.fields) - i - 1
+                                    if remaining > 0:
+                                        st.write(f"... e altre {remaining} colonne")
+                                    break
+                        except Exception as e:
+                            st.write(f"Errore nella lettura schema: {e}")
+                            st.write("Colonne disponibili:", ", ".join(dataset.columns[:10]))
+                    
+                    with col2:
+                        st.write("**Nome Tabella SQL:**", f"`{DatabaseConfig.TEMP_VIEW_NAME}`")
+                        try:
+                            st.write("**Numero Righe:**", f"{row_count:,}")
+                        except Exception as e:
+                            st.write("**Numero Righe:**", f"Errore nel conteggio: {e}")
+                        st.write("**Numero Colonne:**", len(dataset.columns))
 
     
 
@@ -503,8 +504,7 @@ def show_simplified_editor_tab(query_engine, dataset):
     )
     
     # Controlli esecuzione
-    col1, col2, col3 = st.columns(3)
-    
+    col1, col2, col3, col4 = st.columns(4)
     with col1:
         execute_button = st.button("🚀 Esegui Query", type="primary")
     
@@ -516,7 +516,21 @@ def show_simplified_editor_tab(query_engine, dataset):
             result_limit = st.number_input("Limite:", min_value=10, max_value=10000, value=1000)
         else:
             result_limit = None
+    with col4:
+        validate_button = st.button("✅ Valida Query")
     
+    if validate_button:
+        with st.spinner("🔍 Validazione query..."):
+            validation = query_engine.validate_query(query_text)
+            if validation['valid']:
+                st.success("✅ Query sintatticamente corretta!")
+                if 'message' in validation:
+                    st.info(f"📝 {validation['message']}")
+            else:
+                st.error(f"❌ Errori nella query: {validation['error']}")
+                if 'suggestion' in validation:
+                    st.info(f"💡 Suggerimento: {validation['suggestion']}")
+
     # Esecuzione query
     if execute_button:
         if not query_text.strip():
