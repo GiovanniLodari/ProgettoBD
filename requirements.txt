@@ -5,3 +5,4 @@ plotly
 seaborn 
 matplotlib
 setuptools
+streamlit-tree-select

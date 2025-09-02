@@ -63,9 +63,7 @@ class SparkManager:
                 self.spark = builder.master("local[*]").getOrCreate()
                 self.spark.sparkContext.setLogLevel("WARN")  # Riduci logging
                 self._session_initialized = True
-                
-                #st.success(f"✅ Spark initialized - Using {self.spark.sparkContext.defaultParallelism} cores")
-                
+                                
             except Exception as e:
                 st.error(f"❌ Spark initialization failed: {str(e)}")
                 self.spark = None

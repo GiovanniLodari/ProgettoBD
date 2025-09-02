@@ -1,24 +1,223 @@
 QUERY:
 - Geolocalizzazione (con coordinate, se disponibili) dei disastri naturali tracciata in merito a Distribuzione geografica degli utenti (location) – capire da quali aree arrivano i dati
-- Conteggio dei tweet nel tempo (trend giornaliero/ora per identificare picchi di discussione)
+SELECT
+   COALESCE(
+            CAST(split(regexp_replace(coordinates.coordinates, '[ \\[\\]]', ''), ',')[1] AS DOUBLE),
+            (
+                CAST(regexp_extract(place.bounding_box.coordinates, '\\[\\[\\[-?\\d+\\.?\\d*,\\s*(-?\\d+\\.?\\d*)\\],.*,\\[-?\\d+\\.?\\d*,\\s*(-?\\d+\\.?\\d*)\\].*', 1) AS DOUBLE) +
+                CAST(regexp_extract(place.bounding_box.coordinates, '\\[\\[\\[-?\\d+\\.?\\d*,\\s*-?\\d+\\.?\\d*\\],.*,\\[-?\\d+\\.?\\d*,\\s*(-?\\d+\\.?\\d*)\\].*', 2) AS DOUBLE)
+            ) / 2
+    ) AS Latitude,
+   COALESCE(
+            CAST(split(regexp_replace(coordinates.coordinates, '[ \\[\\]]', ''), ',')[0] AS DOUBLE),
+            (
+                CAST(regexp_extract(place.bounding_box.coordinates, '\\[\\[\\[(-?\\d+\\.?\\d*),\\s*-?\\d+\\.?\\d*\\],.*,\\[(-?\\d+\\.?\\d*),\\s*-?\\d+\\.?\\d*\\].*', 1) AS DOUBLE) +
+                CAST(regexp_extract(place.bounding_box.coordinates, '\\[\\[\\[-?\\d+\\.?\\d*,\\s*-?\\d+\\.?\\d*\\],.*,\\[(-?\\d+\\.?\\d*),\\s*-?\\d+\\.?\\d*\\].*', 2) AS DOUBLE)
+            ) / 2
+        ) AS Longitude,
+    place.name as Luogo,
+    CASE
+        WHEN LOWER(COALESCE(full_text, text)) RLIKE '\\b(sos|trapped|911|mayday)\\b' THEN 3 -- Massima Urgenza
+        WHEN LOWER(COALESCE(full_text, text)) RLIKE '\\b(stuck|rescue|rising|surrounded)\\b' THEN 2 -- Alta Urgenza
+        WHEN LOWER(COALESCE(full_text, text)) RLIKE '\\b(help|assistance)\\b' THEN 1 -- Urgenza Standard
+        ELSE 0
+    END AS PunteggioUrgenza,
 
-- I tweet degli utenti con molti follower o di utenti verificati risultano maggiormente influenti rispetto agli altri? (Analisi dei rapporti followers/friends per capire l’influenza degli utenti): quali sono stati i tweet più rilevanti durante l'uragano di Harvey??
-SELECT id_str AS Id, user.name AS utente, favorite_count AS MiPiace, reply_count AS NumeroRisposte, retweet_count as NumeroRetweet, quote_count AS NumeroCitazioni, (favorite_count + reply_count + retweet_count + quote_count) AS InterazioniTotali
-FROM disasters 
-ORDER BY InterazioniTotali DESC
+    'Precise (GPS del Tweet)' AS TipoPosizione,
+    COALESCE(full_text, text) AS TestoTweet,
+    user.screen_name AS Utente,
+    created_at AS Orario
+
+FROM disasters
+WHERE 
+    COALESCE(full_text, text) RLIKE '(?i)\\b(need help|needs help|send help|please help|we are stuck|i am stuck|we are trapped|i am trapped|stuck in|trapped by|water is rising|sos|need rescue|send rescue|hit|hitted|#Fay|#Rescue|#911US)\\b'
+    AND coordinates IS NOT NULL
+    AND coordinates.coordinates IS NOT NULL
+
+ORDER BY    
+    Orario DESC,
+    PunteggioUrgenza DESC; 
+
+
+
+
+- Analisi temporale (Volume di tweet per giorno/ora) (Eventi di disastro correlati a picchi di tweet) (Possibilità di costruire grafici temporali delle interazioni)
+- Numero medio di like e retweet per utente o per tipo di tweet -> more: individua possibili bot
+
+- Grado di engagement: originale vs retweet (retweeted_status)
+SELECT
+    user.name AS NomeAmplificatore,
+    user.followers_count AS FollowerAmplificatore,
+    user.verified AS AmplificatoreVerificato,
+
+    favorite_count AS MiPiaceDelRetweet,
+    retweet_count AS RetweetDelRetweet,
+    reply_count  AS RisposteDelRetweet,
+    quote_count AS CitazioniDelRetweet,
+    (
+        favorite_count +
+        retweet_count +
+        reply_count +
+        quote_count
+    ) AS InterazioniTotaliDelRetweet,
+
+    retweeted_status.user.name AS NomeAutoreOriginale,
+    retweeted_status.user.followers_count AS FollowerAutoreOriginale,
+    retweeted_status.user.verified AS AutoreOriginaleVerificato,
+
+    retweeted_status.favorite_count AS MiPiaceOriginale,
+    retweeted_status.retweet_count AS RetweetOriginale,
+    retweeted_status.reply_count AS RisposteOriginale,
+    retweeted_status.quote_count AS CitazioniOriginale,
+    (
+        retweeted_status.favorite_count +
+        retweeted_status.retweet_count +
+        retweeted_status.reply_count +
+        retweeted_status.quote_count
+    ) AS InterazioniTotaliOriginale
+
+FROM disasters
+WHERE retweeted_status IS NOT NULL
+ORDER BY InterazioniTotaliOriginale DESC
 
 
 - Parole più utilizzate (es. le parole utilizzate possono aumentare la visibilità del tweet?) (Analisi testuale sui contenuti dei tweet (es. presenza di parole chiave legate a disastri naturali))
-- Tipologia di contenuto: originale vs retweet vs quote (retweeted_status, quoted_status) (es. Retweet più diffusi (identificare i tweet più virali nei casi di pericolo magari))
-- Analisi temporale (Volume di tweet per giorno/ora) (Eventi di disastro correlati a picchi di tweet) (Possibilità di costruire grafici temporali delle interazioni)
-- Numero totale di tweet, retweet, citazioni, reply
-- Numero medio di like e retweet per utente o per tipo di tweet -> more: individua possibili bot
+WITH TweetFiltrati AS (
+    SELECT
+        COALESCE(retweeted_status.full_text, retweeted_status.text) AS testo_completo
+    FROM disasters
+    WHERE
+        retweeted_status IS NOT NULL
+        AND COALESCE(retweeted_status.full_text, retweeted_status.text) RLIKE '(?i)hurricane|emergency|help'
+),
+ParoleSingole AS (
+    SELECT
+        explode(split(lower(testo_completo), '\\s+')) AS parola
+    FROM TweetFiltrati
+)
+SELECT
+    parola_pulita,
+    COUNT(*) AS frequenza
+FROM (
+    SELECT regexp_replace(parola, '[^a-zA-Zàèéìòù]', '') AS parola_pulita
+    FROM ParoleSingole
+)
+WHERE
+    parola_pulita != ''
+    AND parola_pulita NOT IN (
+        'a', 'an', 'the', 'is', 'in', 'on', 'for', 'with', 'of', 'to', 'and', 'rt', 'I', 'you', 'he', 'she', 'our', 'are', 'this', 'by', 'at', 'as', 'is', 'we', 'who', 'it', 'all', 'have', 'so', 'about', 'just'
+    )
+GROUP BY parola_pulita
+ORDER BY frequenza DESC
 
-- Chi sono gli autori originali che, una volta retwittati, hanno generato il maggior engagement in termini di 'Mi Piace' totali?
-SELECT retweeted_status.user.name, retweeted_status.user.screen_name, MAX(retweeted_status.user.followers_count) as Followers,  MAX(retweeted_status.user.friends_count) as Friends, Count(retweeted_status.id_str) as NumeroTweet, SUM(retweeted_status.favorite_count) as Mi_Piace_Totali
-FROM disasters
-GROUP by  retweeted_status.user.name, retweeted_status.user.screen_name
-ORDER BY  Mi_Piace_Totali DESC
+
+- Estrazione date
+SELECT  CONCAT(SUBSTRING(created_at, 5, 7),  SUBSTRING(created_at, 27, 4)) AS GiornoCompleto
+FROM  disasters
+GROUP BY  GiornoCompleto
+ORDER BY  GiornoCompleto
+
+
+- Distribuzione di Tweet da ciascun utente nel corso dell'emergenza
+WITH DataConGiorno AS (
+    SELECT
+        CONCAT(SUBSTRING(created_at, 5, 7),  SUBSTRING(created_at, 27, 4)) AS Giorno,
+        retweeted_status
+    FROM disasters
+    WHERE retweeted_status IS NOT NULL AND created_at IS NOT NULL
+)
+SELECT
+    Giorno,
+    retweeted_status.user.name,
+    retweeted_status.user.screen_name,
+    MAX(retweeted_status.user.followers_count) AS Followers,
+    COUNT(retweeted_status.id_str) AS NumeroTweet,
+    SUM(retweeted_status.favorite_count) AS Mi_Piace_Totali
+FROM
+    DataConGiorno
+GROUP BY
+    Giorno,
+    retweeted_status.user.name,
+    retweeted_status.user.screen_name
+ORDER BY
+    Giorno ASC, Mi_Piace_Totali DESC;
+
+
+- Distribuzione tweet inerenti all'emergenza nei giorni
+WITH DataConGiorno AS (
+    SELECT
+        CONCAT(SUBSTRING(created_at, 5, 7),  SUBSTRING(created_at, 27, 4)) AS Giorno,
+        retweeted_status,
+        CONCAT_WS(', ',
+            IF(LOWER(COALESCE(retweeted_status.full_text, retweeted_status.text)) LIKE '%hurricane%', 'hurricane', NULL),
+            IF(LOWER(COALESCE(retweeted_status.full_text, retweeted_status.text)) LIKE '%emergency%', 'emergency', NULL),
+            IF(LOWER(COALESCE(retweeted_status.full_text, retweeted_status.text)) LIKE '%fema%', 'fema', NULL),
+            IF(LOWER(COALESCE(retweeted_status.full_text, retweeted_status.text)) LIKE '%donation%', 'donation', NULL),
+            IF(LOWER(COALESCE(retweeted_status.full_text, retweeted_status.text)) LIKE '%disaster%', 'disaster', NULL),
+            IF(LOWER(COALESCE(retweeted_status.full_text, retweeted_status.text)) LIKE '%storm%', 'storm', NULL),
+            IF(LOWER(COALESCE(retweeted_status.full_text, retweeted_status.text)) LIKE '%relief%', 'relief', NULL),
+            IF(LOWER(COALESCE(retweeted_status.full_text, retweeted_status.text)) LIKE '%rescue%', 'rescue', NULL),
+            IF(LOWER(COALESCE(retweeted_status.full_text, retweeted_status.text)) LIKE '%damage%', 'damage', NULL),
+            IF(LOWER(COALESCE(retweeted_status.full_text, retweeted_status.text)) LIKE '%flood%', 'flood', NULL),
+            IF(LOWER(COALESCE(retweeted_status.full_text, retweeted_status.text)) LIKE '%wind%', 'wind', NULL),
+            IF(LOWER(COALESCE(retweeted_status.full_text, retweeted_status.text)) LIKE '%volunteer%', 'volunteer', NULL),
+            IF(LOWER(COALESCE(retweeted_status.full_text, retweeted_status.text)) LIKE '%support%', 'support', NULL),
+            IF(LOWER(COALESCE(retweeted_status.full_text, retweeted_status.text)) LIKE '%help%', 'help', NULL),
+            IF(LOWER(COALESCE(retweeted_status.full_text, retweeted_status.text)) LIKE '%victim%', 'victim', NULL)
+        ) AS KeywordTrovate
+    FROM disasters
+    WHERE 
+        retweeted_status IS NOT NULL AND created_at IS NOT NULL
+        AND COALESCE(retweeted_status.full_text, retweeted_status.text) RLIKE '(?i)hurricane|emergency|FEMA|donation|disaster|storm|relief|rescue|damage|flood|wind|volunteer|support|help|victim'
+)
+SELECT
+    Giorno,
+    retweeted_status.user.name,
+    retweeted_status.user.screen_name,
+    MAX(retweeted_status.user.followers_count) AS Followers,
+    COUNT(retweeted_status.id_str) AS NumeroTweet,
+    SUM(retweeted_status.favorite_count) AS Mi_Piace_Totali
+FROM
+    DataConGiorno
+GROUP BY
+    Giorno,
+    retweeted_status.user.name,
+    retweeted_status.user.screen_name
+ORDER BY
+    Giorno ASC, Mi_Piace_Totali DESC;
+
+
+
+- Distribuzione lavoro utenti relativa alla descrizione dell'account
+WITH UtentiCategorizzati AS (
+    SELECT
+        retweeted_status,
+        CASE
+            WHEN LOWER(retweeted_status.user.description) RLIKE 'journalist|reporter|media|news'
+                THEN 'Media/Giornalista'
+            WHEN LOWER(retweeted_status.user.description) RLIKE 'volunteer|rescue|relief|red cross'
+                THEN 'Volontario/Soccorritore'
+            WHEN LOWER(retweeted_status.user.description) RLIKE 'official|government|department|emergency management|fema'
+                THEN 'Governo/Ufficiale'
+            WHEN LOWER(retweeted_status.user.description) RLIKE 'expert|scientist|researcher|meteorologist'
+                THEN 'Esperto/Scienziato'
+            WHEN LOWER(retweeted_status.user.description) RLIKE 'organization|ngo|non-profit'
+                THEN 'Organizzazione/ONG'
+            ELSE 'Non Specificato'
+        END AS CategoriaUtente
+    FROM disasters
+    WHERE
+        retweeted_status IS NOT NULL
+        AND retweeted_status.user.description IS NOT NULL
+)
+SELECT
+    CategoriaUtente,
+    COUNT(DISTINCT retweeted_status.user.screen_name) AS NumeroUtentiUnici,
+    COUNT(retweeted_status.id_str) AS NumeroTweetTotali
+FROM UtentiCategorizzati
+WHERE CategoriaUtente != 'Non Specificato'
+GROUP BY CategoriaUtente
+ORDER BY NumeroUtentiUnici DESC; 
 
 
 FRONTEND:

@@ -627,145 +627,106 @@ class DataLoader:
     # Sostituisci la tua funzione esistente in DataLoader con questa
 
     def load_multiple_files(self, file_paths: List[str], file_format: str = None, schema_type: str = 'auto') -> Optional[SparkDataFrame]:
-        logger.info(f"Avvio caricamento di {len(file_paths)} file con strategia 'Normalizza-Post-Lettura'")
-        
-        spark = self.spark_manager
-        if not file_paths:
-            logger.error("Nessun file fornito per il caricamento.")
-            return None
+        with st.spinner(f"Reading {len(file_paths)} files..."):
+            logger.info(f"Avvio caricamento di {len(file_paths)} file")
+            
+            spark = self.spark_manager
+            if not file_paths:
+                logger.error("Nessun file fornito per il caricamento.")
+                return None
 
-        progress_bar = st.progress(0)
+            progress_bar = st.progress(0)
 
-        # --- SETUP: Definisci lo schema master e la cartella di output ---
-        master_schema = self.schema_manager.get_twitter_schema()
-        if not master_schema:
-            logger.error("Impossibile ottenere lo schema Twitter master. Caricamento interrotto.")
-            return None
-        logger.info("Utilizzo dello schema Twitter come 'master schema' per la normalizzazione.")
-        
-        home_directory = os.path.expanduser('~')
-        schema_dir = os.path.join(home_directory, 'Desktop', 'schemas_output')
-        os.makedirs(schema_dir, exist_ok=True)
-        
-        dataframes_normalizzati = []
+            # --- SETUP: Definisci lo schema master e la cartella di output ---
+            master_schema = self.schema_manager.get_twitter_schema()
+            if not master_schema:
+                logger.error("Impossibile ottenere lo schema Twitter master. Caricamento interrotto.")
+                return None
+            logger.info("Utilizzo dello schema Twitter come 'master schema' per la normalizzazione.")
+            
+            home_directory = os.path.expanduser('~')
+            schema_dir = os.path.join(home_directory, 'Desktop', 'schemas_output')
+            os.makedirs(schema_dir, exist_ok=True)
+            
+            dataframes_normalizzati = []
 
-        temp_parquet_dir = "temp_parquet_output"
-        if os.path.exists(temp_parquet_dir):
-            shutil.rmtree(temp_parquet_dir) # Pulisci la cartella da esecuzioni precedenti
-        os.makedirs(temp_parquet_dir)
+            temp_parquet_dir = "temp_parquet_output"
+            if os.path.exists(temp_parquet_dir):
+                shutil.rmtree(temp_parquet_dir)
+            os.makedirs(temp_parquet_dir)
 
-        # --- FASE 1: Carica e Normalizza ogni DataFrame individualmente ---
-        for idx, file_path in enumerate(file_paths):
-            try:
-                logger.info(f"--- Processando file {idx+1}/{len(file_paths)}: {file_path} ---")
-                current_format = file_format or self._detect_format(file_path)
-                
-                # 1a. Carica il singolo file lasciando che Spark indovini il suo schema specifico.
-                df = self.schema_manager.load_with_schema_and_fallback(
-                    spark, file_path, current_format, 'auto' # Forza l'inferenza per massima flessibilità
-                )
-                
-                if df is None:
-                    logger.warning(f"Salto del file {file_path} perché il caricamento ha restituito None.")
-                    continue
-                
-                # 1b. Salva lo schema inferito per questo specifico file (per debug)
+            # --- FASE 1: Carica e Normalizza ogni DataFrame individualmente ---
+            for idx, file_path in enumerate(file_paths):
                 try:
-                    schema_dict = json.loads(df.schema.json())
-                    schema_formatted_string = json.dumps(schema_dict, indent=4)
-                    base_filename = os.path.basename(file_path)
-                    schema_file_path = os.path.join(schema_dir, f"schema_{base_filename}.json")
-                    with open(schema_file_path, "w", encoding="utf-8") as f:
-                        f.write(schema_formatted_string)
-                    logger.info(f"Schema inferito per {base_filename} salvato in: {schema_file_path}")
-                except Exception as schema_error:
-                    logger.error(f"Impossibile salvare lo schema per il file {file_path}: {schema_error}")
+                    logger.info(f"--- Processando file {idx+1}/{len(file_paths)}: {file_path} ---")
+                    current_format = file_format or self._detect_format(file_path)
+                    
+                    # 1a. Carica il singolo file lasciando che Spark indovini il suo schema specifico.
+                    df = self.schema_manager.load_with_schema_and_fallback(
+                        spark, file_path, current_format, 'auto' # Forza l'inferenza per massima flessibilità
+                    )
+                    
+                    if df is None:
+                        logger.warning(f"Salto del file {file_path} perché il caricamento ha restituito None.")
+                        continue
+                    
+                    # 1b. Salva lo schema inferito per questo specifico file (per debug)
+                    try:
+                        schema_dict = json.loads(df.schema.json())
+                        schema_formatted_string = json.dumps(schema_dict, indent=4)
+                        base_filename = os.path.basename(file_path)
+                        schema_file_path = os.path.join(schema_dir, f"schema_{base_filename}.json")
+                        with open(schema_file_path, "w", encoding="utf-8") as f:
+                            f.write(schema_formatted_string)
+                        logger.info(f"Schema inferito per {base_filename} salvato in: {schema_file_path}")
+                    except Exception as schema_error:
+                        logger.error(f"Impossibile salvare lo schema per il file {file_path}: {schema_error}")
 
-                # 1c. NORMALIZZA il DataFrame per renderlo conforme allo schema master.
-                #     Questo è il passaggio cruciale che garantisce la coerenza.
-                df_normalizzato = self.schema_manager.normalize_dataframe_to_schema(df, master_schema)
+                    df_normalizzato = self.schema_manager.normalize_dataframe_to_schema(df, master_schema)
+                    df_normalizzato = df_normalizzato.withColumn("source_file", F.lit(os.path.basename(file_path))) \
+                                                    .withColumn("source_id", F.lit(idx + 1))
+                    df_normalizzato.write.mode("append").parquet(temp_parquet_dir)
+                    dataframes_normalizzati.append(df_normalizzato)
+
+                    logger.info(f"File {file_path} salvato correttamente in formato Parquet.")
+
+                    progress = int((idx+1)/len(file_paths) * 100)
+                    progress_bar.progress(progress, text=f"Readed {idx+1} of {len(file_paths)} files")
+
+                except Exception as e:
+                    logger.error(f"Errore critico durante il processo del file {file_path}: {e}", exc_info=True)
+                    continue
+                    
+            if not dataframes_normalizzati:
+                logger.error("Nessun file è stato caricato e normalizzato con successo.")
+                return None
+            
+            progress_bar.empty()
+        with st.spinner(f"Union of {len(file_paths)} files..."):
+            logger.info(f"Unione di {len(dataframes_normalizzati)} DataFrame normalizzati...")
+
+            combined_df = reduce(lambda df1, df2: df1.union(df2), dataframes_normalizzati)
+            try:
+                #combined_df = spark.read.parquet(temp_parquet_dir)
+                total_records = combined_df.count()
+                combined_df.show()
+
+                logger.info(f"Conteggio finale riuscito. Totale record: {total_records}")
+
+                combined_df.createOrReplaceTempView("temp_data")
+                self._update_metadata(combined_df, f"{len(file_paths)} files combined")
+                self.current_dataset = combined_df
                 
-                # 1d. Aggiungi i metadati.
-                df_normalizzato = df_normalizzato.withColumn("source_file", F.lit(os.path.basename(file_path))) \
-                                                .withColumn("source_id", F.lit(idx + 1))
-                
-                #dataframes_normalizzati.append(df_normalizzato)
-                df_normalizzato.write.mode("append").parquet(temp_parquet_dir)
+                logger.info("DataFrame finale pronto per le query.")
+                return combined_df
 
-                dataframes_normalizzati.append(df_normalizzato)
-
-                logger.info(f"File {file_path} salvato correttamente in formato Parquet.")
-                #logger.info(f"File {file_path} processato e normalizzato con successo.")
-
-                progress = int((idx+1)/len(file_paths) * 100)
-                progress_bar.progress(progress)
 
             except Exception as e:
-                logger.error(f"Errore critico durante il processo del file {file_path}: {e}", exc_info=True)
-                continue
-                
-        if not dataframes_normalizzati:
-            logger.error("Nessun file è stato caricato e normalizzato con successo.")
-            return None
-
-        # --- FASE 2: Unisci i DataFrame, che ora sono tutti perfettamente compatibili ---
-        logger.info(f"Unione di {len(dataframes_normalizzati)} DataFrame normalizzati...")
-        # Usiamo un .union() semplice perché gli schemi sono ora identici
-        combined_df = reduce(lambda df1, df2: df1.union(df2), dataframes_normalizzati)
-        
-        # --- FASE 3: Finalizza e ottieni il conteggio in modo sicuro ---
-        # try:
-        #     # Usa MEMORY_AND_DISK per evitare OutOfMemoryError.
-        #     # Spark userà la RAM e, se non basta, il disco.
-        #     combined_df.persist(StorageLevel.MEMORY_AND_DISK)
-
-        #     # Ora che è persistito in modo sicuro, possiamo chiamare .count()
-        #     total_records = combined_df.count()
-        #     logger.info(f"Dataset combinato creato con successo: {total_records} righe totali")
-
-        #     # Imposta il DataFrame per le query successive
-        #     combined_df.createOrReplaceTempView("temp_data")
-        #     self._update_metadata(combined_df, f"{len(file_paths)} files combined")
-        #     self.current_dataset = combined_df
-            
-        #     logger.info("DataFrame finale pronto per le query.")
-        #     return combined_df
-        
-        logger.info("Lettura del dataset Parquet unificato...")
-        progress_bar.empty()  # rimuove la barra
-        st.success("✅ Lettura dei file completata. Unione in corso...")
-        try:
-            combined_df = spark.read.parquet(temp_parquet_dir)
-            
-            # Ora il conteggio è un'operazione efficiente sul formato Parquet
-            total_records = combined_df.count()
-            
-            combined_df.show()
-
-            logger.info(f"Conteggio finale riuscito. Totale record: {total_records}")
-
-            combined_df.createOrReplaceTempView("temp_data")
-            self._update_metadata(combined_df, f"{len(file_paths)} files combined")
-            self.current_dataset = combined_df
-            
-            logger.info("DataFrame finale pronto per le query.")
-            
-            # Opzionale: pulisci la cartella temporanea alla fine
-            # try:
-            #     shutil.rmtree(temp_parquet_dir)
-            #     logger.info(f"Cartella temporanea {temp_parquet_dir} rimossa.")
-            # except Exception as e:
-            #     logger.warning(f"Impossibile rimuovere la cartella temporanea: {e}")
-
-            return combined_df
-
-
-        except Exception as e:
-            logger.error(f"Errore durante la finalizzazione del DataFrame (conteggio o persist): {e}", exc_info=True)
-            # In caso di errore, rilascia la cache se è stata creata
-            if 'combined_df' in locals():
-                combined_df.unpersist()
-            return None
+                logger.error(f"Errore durante la finalizzazione del DataFrame (conteggio o persist): {e}", exc_info=True)
+                # In caso di errore, rilascia la cache se è stata creata
+                if 'combined_df' in locals():
+                    combined_df.unpersist()
+                return None
         
     
     def _get_schema_for_type(self, schema_type: str, file_path: str = None) -> Optional[StructType]:
