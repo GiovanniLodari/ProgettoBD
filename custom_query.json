@@ -1,17 +1,18 @@
 {
     "📊 Analisi Tweet": {
-        "Top 20 utenti per follower": "SELECT \n\tuser.screen_name as username,\n\tuser.followers_count as followers,\n\tuser.friends_count as following,\n\tuser.verified as verified,\n\tCOUNT(*) as tweet_count\nFROM {temp_view_name}\nGROUP BY user.screen_name, user.followers_count, user.friends_count, user.verified\nORDER BY user.followers_count DESC\nLIMIT 20",
-        "Tweet più popolari (like + retweet)": "SELECT \n\tuser.screen_name as author,\n\ttext,\n\tfavorite_count as likes,\n\tretweet_count as retweets,\n\t(favorite_count + retweet_count) as total_engagement\nFROM {temp_view_name}\nWHERE retweeted_status IS NULL\nORDER BY total_engagement DESC\nLIMIT 20",
-        "Distribuzione tipi di tweet": "SELECT\n\tCASE\n\t\tWHEN retweeted_status IS NOT NULL THEN 'Retweet'\n\t\tWHEN quoted_status_id_str IS NOT NULL THEN 'Quote Tweet'\n\t\tWHEN reply_count > 0 THEN 'Tweet con Reply'\n\t\tELSE 'Tweet Originale'\n\tEND AS tweet_type,\n\tCOUNT(*) as count,\n\tAVG(favorite_count) as avg_likes,\n\tAVG(retweet_count) as avg_retweets\nFROM {temp_view_name}\nGROUP BY 1\nORDER BY count DESC",
-        "Hashtag più usati": "SELECT \n\tLOWER(TRIM(hashtag_found)) as hashtag,\n\tCOUNT(*) as frequency\nFROM (\n\tSELECT explode(\n\t\tregexp_extract_all(text, '#[a-zA-Z0-9_]+')\n\t) as hashtag_found\n\tFROM {temp_view_name}\n\tWHERE text LIKE '%#%'\n)\nGROUP BY hashtag\nORDER BY frequency DESC\nLIMIT 30"
+        "Top 20 utenti per follower": "SELECT \n\tuser.screen_name as username,\n\tuser.followers_count as followers,\n\tuser.friends_count as following,\n\tuser.verified as verified,\n\tCOUNT(*) as tweet_count\nFROM disasters\nGROUP BY user.screen_name, user.followers_count, user.friends_count, user.verified\nORDER BY user.followers_count DESC\nLIMIT 20",
+        "Tweet più popolari (like + retweet)": "SELECT \n\tuser.screen_name as author,\n\ttext,\n\tfavorite_count as likes,\n\tretweet_count as retweets,\n\t(favorite_count + retweet_count) as total_engagement\nFROM disasters\nWHERE retweeted_status IS NULL\nORDER BY total_engagement DESC\nLIMIT 20",
+        "Distribuzione tipi di tweet": "SELECT\n\tCASE\n\t\tWHEN retweeted_status IS NOT NULL THEN 'Retweet'\n\t\tWHEN quoted_status_id_str IS NOT NULL THEN 'Quote Tweet'\n\t\tWHEN reply_count > 0 THEN 'Tweet con Reply'\n\t\tELSE 'Tweet Originale'\n\tEND AS tweet_type,\n\tCOUNT(*) as count,\n\tAVG(favorite_count) as avg_likes,\n\tAVG(retweet_count) as avg_retweets\nFROM disasters\nGROUP BY 1\nORDER BY count DESC",
+        "Hashtag più usati": "SELECT \n\tLOWER(TRIM(hashtag_found)) as hashtag,\n\tCOUNT(*) as frequency\nFROM (\n\tSELECT explode(\n\t\tregexp_extract_all(text, '#[a-zA-Z0-9_]+')\n\t) as hashtag_found\n\tFROM disasters\n\tWHERE text LIKE '%#%'\n)\nGROUP BY hashtag\nORDER BY frequency DESC\nLIMIT 30"
     },
     "🔍 Query di Base": {
-        "Prime 10 righe": "SELECT * FROM {temp_view_name} LIMIT 10",
-        "Conteggio totale": "SELECT COUNT(*) as total_records FROM {temp_view_name}",
-        "Schema tabella": "DESCRIBE {temp_view_name}"
+        "Prime 10 righe": "SELECT * FROM disasters LIMIT 10",
+        "Conteggio totale": "SELECT COUNT(*) as total_records FROM disasters",
+        "Schema tabella": "DESCRIBE disasters"
     },
     "📈 Aggregazioni Generali": {
-        "Statistiche colonna numerica": "SELECT \n\tCOUNT(*) as count,\n\tAVG(favorite_count) as media,\n\tMIN(favorite_count) as minimo,\n\tMAX(favorite_count) as massimo,\n\tSTDDEV(favorite_count) as std_dev\nFROM {temp_view_name}\nWHERE favorite_count IS NOT NULL",
-        "Percentili": "SELECT \n\tPERCENTILE_APPROX(favorite_count, 0.25) as Q1,\n\tPERCENTILE_APPROX(favorite_count, 0.5) as mediana,\n\tPERCENTILE_APPROX(favorite_count, 0.75) as Q3,\n\tPERCENTILE_APPROX(favorite_count, 0.9) as P90\nFROM {temp_view_name}\nWHERE favorite_count IS NOT NULL"
+        "Statistiche colonna numerica": "SELECT \n\tCOUNT(*) as count,\n\tAVG(favorite_count) as media,\n\tMIN(favorite_count) as minimo,\n\tMAX(favorite_count) as massimo,\n\tSTDDEV(favorite_count) as std_dev\nFROM disasters\nWHERE favorite_count IS NOT NULL",
+        "Percentili": "SELECT \n\tPERCENTILE_APPROX(favorite_count, 0.25) as Q1,\n\tPERCENTILE_APPROX(favorite_count, 0.5) as mediana,\n\tPERCENTILE_APPROX(favorite_count, 0.75) as Q3,\n\tPERCENTILE_APPROX(favorite_count, 0.9) as P90\nFROM disasters\nWHERE favorite_count IS NOT NULL",
+        "Estrazione dell'intero dataset": "SELECT * FROM disasters"
     }
 }

@@ -8,7 +8,7 @@ from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql import functions as F
 import pandas as pd
 import tempfile
-import os
+import os, sys
 import logging
 import shutil
 from src.config import Config, SparkConfig
@@ -33,6 +33,8 @@ class SparkManager:
                 
                 os.environ['PATH'] = f"{os.environ.get('PATH')};{os.path.join(hadoop_home, 'bin')}"
                 logger.info(f"HADOOP_HOME impostato a: {os.environ['HADOOP_HOME']}")
+                os.environ['PYSPARK_PYTHON'] = sys.executable
+                os.environ['PYSPARK_DRIVER_PYTHON'] = sys.executable
             except Exception as e:
                 logger.error(f"Errore nell'impostazione di HADOOP_HOME: {e}")
                 st.warning("Potrebbero verificarsi errori di Hadoop/winutils su Windows.")
@@ -43,7 +45,7 @@ class SparkManager:
                 .master("local[*]") \
                 .config("spark.driver.memory", "4g") \
                 .config("spark.executor.memory", "4g") \
-                .config("spark.driver.maxResultSize", "2g") \
+                .config("spark.driver.maxResultSize", "4g") \
                 .config("spark.sql.adaptive.enabled", "true") \
                 .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer") \
                 .config("spark.sql.execution.arrow.pyspark.enabled", "true") \
