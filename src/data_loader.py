@@ -702,7 +702,7 @@ class DataLoader:
                 return None
             
             progress_bar.empty()
-        with st.spinner(f"Union of {len(file_paths)} files..."):
+        with st.spinner(f"Merging {len(file_paths)} files..."):
             logger.info(f"Unione di {len(dataframes_normalizzati)} DataFrame normalizzati...")
 
             combined_df = reduce(lambda df1, df2: df1.union(df2), dataframes_normalizzati)

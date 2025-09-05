@@ -3,6 +3,7 @@ Pagina per query SQL personalizzate - Versione semplificata
 """
 
 import streamlit as st
+import streamlit.components.v1 as components
 import pandas as pd
 from src.analytics import QueryEngine
 from src.visualizations import GeneralVisualizations
@@ -14,163 +15,14 @@ import os, json
 import re
 import traceback
 from typing import Optional, Dict, Any, List, Tuple
+from pages_logic.analytics_page import show_analytics_page
 
 logger = logging.getLogger(__name__)
-
-@staticmethod
-def _map_to_pandas(iterator):
-    """Funzione helper per convertire una partizione in un DataFrame Pandas."""
-    try:
-        return [pd.DataFrame(list(iterator))]
-    except Exception as e:
-        logger.error(f"Errore nella conversione di una partizione: {e}")
-        raise e
 
 class RobustDataConverter:
     """Classe per gestire conversioni robuste da Spark a Pandas con gestione dimensioni"""
     
-    # Limiti configurabili per evitare l'errore maxResultSize
     DEFAULT_MAX_ROWS = 10000
-    SAFE_MAX_ROWS = 1000
-    MAX_MEMORY_MB = 1000
-    
-    @staticmethod
-    def _convert_with_comprehensive_fallback(df) -> pd.DataFrame:
-        """Conversione con fallback comprensivo per tutti i tipi problematici"""
-        
-        st.info("🔧 Applicando conversione robusta...")
-        
-        # Prima, identifica TUTTE le colonne problematiche
-        problematic_cols = RobustDataConverter._diagnose_all_columns(df, show_details=True)
-        
-        if problematic_cols:
-            st.warning("🔧 Colonne convertite automaticamente:")
-            for idx, name, dtype, error_type in problematic_cols:
-                st.info(f"- #{idx}: '{name}' ({dtype}) → {error_type}")
-        
-        # Strategia 1: Converti tutto il possibile a tipi sicuri
-        safe_cols = []
-        
-        for i, field in enumerate(df.schema.fields):
-            col_name = field.name
-            col_type = field.dataType
-            
-            try:
-                if RobustDataConverter._is_problematic_column(i, col_name, problematic_cols):
-                    # Applica conversione specifica basata sul tipo di problema
-                    safe_col = RobustDataConverter._convert_problematic_column(
-                        F.col(col_name), col_name, col_type, i, problematic_cols
-                    )
-                    safe_cols.append(safe_col)
-                else:
-                    # Colonna OK, mantieni com'è
-                    safe_cols.append(F.col(col_name))
-                    
-            except Exception as e:
-                logger.warning(f"Errore nel processare colonna {col_name}: {e}")
-                # Fallback estremo: converti a stringa
-                safe_cols.append(F.col(col_name).cast("string").alias(col_name))
-        
-        try:
-            # Prova la conversione con le colonne "sicure"
-            df_safe = df.select(*safe_cols)
-            pandas_df = df_safe.toPandas()
-            
-            # Post-processing per gestire eventuali problemi residui
-            pandas_df = RobustDataConverter._post_process_pandas_df(pandas_df)
-            
-            st.success("✅ Conversione robusta completata!")
-            return pandas_df
-            
-        except Exception as e2:
-            logger.error(f"Anche la conversione robusta è fallita: {e2}")
-            st.error(f"❌ Conversione robusta fallita: {str(e2)[:100]}...")            
-            return RobustDataConverter._force_all_to_string(df)
-    
-    @staticmethod
-    def _diagnose_all_columns(df, sample_size: int = 50, show_details: bool = False) -> List[Tuple[int, str, str, str]]:
-        """Identifica tutte le colonne problematiche"""
-        problematic = []
-        
-        for i, field in enumerate(df.schema.fields):
-            try:
-                test_df = df.select(field.name).limit(sample_size)
-                test_df.head()
-                    
-            except Exception as e:
-                error_msg = str(e)
-                error_type = "Conversione Generica"
-                
-                if "Expected bytes" in error_msg and "got a" in error_msg:
-                    error_type = "Tipo Misto (bytes/object)"
-                elif "struct" in field.dataType.simpleString().lower():
-                    error_type = "Struttura Complessa"
-                elif "array" in field.dataType.simpleString().lower():
-                    error_type = "Array"
-                elif "map" in field.dataType.simpleString().lower():
-                    error_type = "Mappa"
-                elif "binary" in field.dataType.simpleString().lower():
-                    error_type = "Dati Binari"
-                
-                problematic.append((i, field.name, field.dataType.simpleString(), error_type))
-        
-        return problematic
-    
-    @staticmethod
-    def _is_problematic_column(col_index: int, col_name: str, problematic_list: List) -> bool:
-        """Controlla se una colonna è nella lista delle problematiche"""
-        return any(p[0] == col_index for p in problematic_list)
-    
-    @staticmethod
-    def _convert_problematic_column(col_expr, col_name: str, col_type, col_index: int, problematic_list: List):
-        """Converte una colonna problematica usando la strategia appropriata"""
-        
-        error_type = "Conversione Generica"
-        for p_idx, p_name, p_type, p_error in problematic_list:
-            if p_idx == col_index:
-                error_type = p_error
-                break
-        
-        if error_type == "Struttura Complessa":
-            return F.to_json(col_expr).alias(col_name)
-        elif error_type == "Array":
-            return F.to_json(col_expr).alias(col_name)
-        elif error_type == "Mappa":
-            return F.to_json(col_expr).alias(col_name)
-        elif error_type == "Dati Binari":
-            return F.base64(col_expr).alias(col_name)
-        elif error_type == "Tipo Misto (bytes/object)":
-            return F.col(col_name).cast("string").alias(col_name)
-        else:
-            return F.col(col_name).cast("string").alias(col_name)
-    
-    @staticmethod
-    def _post_process_pandas_df(df: pd.DataFrame) -> pd.DataFrame:
-        """Post-processing del DataFrame Pandas per gestire problemi residui"""
-        
-        for col in df.columns:
-            if df[col].dtype == 'object':
-                try:
-                    df[col] = df[col].astype(str)
-                except Exception as e:
-                    logger.warning(f"Post-processing colonna {col}: {e}")
-                    df[col] = df[col].astype(str)
-        
-        return df
-    
-    @staticmethod
-    def _force_all_to_string(df) -> pd.DataFrame:
-        """Ultima risorsa: forza TUTTE le colonne a stringa"""
-        st.error("CONVERSIONE FORZATA: Tutte le colonne convertite in stringhe")
-        
-        try:
-            string_cols = [F.col(field.name).cast("string").alias(field.name) for field in df.schema.fields]
-            df_strings = df.select(*string_cols)
-            return df_strings.toPandas()
-        except Exception as e:
-            logger.error(f"Anche la conversione forzata è fallita: {e}")
-            st.error(f"Impossibile convertire il DataFrame: {e}")
-            return pd.DataFrame({"error": ["Conversione fallita completamente"]})
     
     @staticmethod
     def _is_complex_type(data_type) -> bool:
@@ -194,8 +46,6 @@ class EnhancedQueryEngine(QueryEngine):
         """
         import time
         start_time = time.time()
-
-        st.info("🔍 Validazione query in corso...")
         
         result = {
             'success': False,
@@ -214,6 +64,14 @@ class EnhancedQueryEngine(QueryEngine):
             
             spark_session = st.session_state.spark_manager.get_spark_session()
             spark_df = spark_session.sql(query)
+
+            try:
+                total_rows_count = spark_df.count()
+            except Exception as e:
+                total_rows_count = "N/A"
+                st.error(f"❌ Impossibile contare le righe totali: {e}")
+
+            logger.info(f"Conteggio totale righe: {total_rows_count}")
             
             if limit_results:
                 spark_df = spark_df.limit(limit_results)
@@ -227,12 +85,6 @@ class EnhancedQueryEngine(QueryEngine):
                 execution_time = time.time() - start_time
                 self._add_to_history(query, 0, True, None, execution_time)
                 return result
-            
-            try:
-                total_rows_count = spark_df.count()
-            except Exception as e:
-                total_rows_count = "N/A"
-                st.error(f"❌ Impossibile contare le righe totali: {e}")
 
             if limit_results:
                 pandas_df = spark_df.toPandas()
@@ -335,28 +187,46 @@ class EnhancedQueryEngine(QueryEngine):
         return stats
 
 def get_twitter_query_templates():
-    """Carica i template delle query da un file JSON."""
+    """
+    Carica i template delle query da un file JSON, garantendo la retrocompatibilità.
+    Converte al volo le query in formato stringa (vecchio) nel formato oggetto (nuovo).
+    """
     file_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'custom_query.json')
     
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
             templates = json.load(f)
 
+        # Itera su categorie e query per normalizzare la struttura dati
         for category, queries in templates.items():
-            for query_name, query_string in queries.items():
-                templates[category][query_name] = query_string.format(
-                    temp_view_name=DatabaseConfig.TEMP_VIEW_NAME
-                )
+            for query_name, query_value in queries.items():
+                
+                # MODIFICA CHIAVE: Controlla il formato di ogni query
+                if isinstance(query_value, str):
+                    # Se è una stringa (VECCHIO FORMATO), la convertiamo nel nuovo formato
+                    formatted_query = query_value.format(temp_view_name=DatabaseConfig.TEMP_VIEW_NAME)
+                    templates[category][query_name] = {
+                        "query": formatted_query,
+                        "charts": []  # Aggiungiamo una lista di grafici vuota
+                    }
+                elif isinstance(query_value, dict) and 'query' in query_value:
+                    # Se è già un dizionario (NUOVO FORMATO), formattiamo solo la query
+                    query_value['query'] = query_value['query'].format(
+                        temp_view_name=DatabaseConfig.TEMP_VIEW_NAME
+                    )
+                else:
+                    # Se il formato non è riconosciuto, lo segnaliamo e lo saltiamo
+                    print(f"Attenzione: la query '{query_name}' ha un formato non valido e sarà ignorata.")
+                    # Potresti anche decidere di rimuoverla per evitare errori a valle
+                    # del templates[category][query_name] 
+        
         return templates
     
     except FileNotFoundError:
-        print(f"Errore: file '{file_path}' non trovato.")
-        return {}
-    except json.JSONDecodeError:
-        print(f"Errore: il file '{file_path}' non è un JSON valido.")
+        st.error(f"Errore: file dei template '{file_path}' non trovato.")
         return {}
     except Exception as e:
-        print(f"Si è verificato un errore inatteso: {e}")
+        st.error(f"Errore durante la lettura o la normalizzazione del file JSON: {e}")
         return {}
 
 def show_simplified_custom_query_page():
@@ -392,10 +262,17 @@ def show_simplified_custom_query_page():
 
 
 def show_dataset_info_safe(dataset):
-    """Mostra informazioni dataset con gestione errori"""
+    """Mostra informazioni dataset con gestione errori in una singola colonna."""
     with st.expander("Informazioni Dataset"):
         with st.spinner("Caricamento informazioni dataset..."):
             if dataset is not None:
+                # Recupero delle generalità
+                try:
+                    view_name = DatabaseConfig.TEMP_VIEW_NAME
+                except NameError:
+                    view_name = "N/A"
+                    st.warning("⚠️ `DatabaseConfig.TEMP_VIEW_NAME` non definita.")
+                
                 if 'row_count' not in st.session_state:
                     try:
                         st.session_state.row_count = dataset.count()
@@ -404,58 +281,92 @@ def show_dataset_info_safe(dataset):
                         st.error(f"❌ Errore nel conteggio: {e}")
                 
                 row_count = st.session_state.row_count
-
-                col1, col2 = st.columns([2, 1])
                 
-                with col1:
-                    st.subheader("Schema Colonne:")
-                    try:
-                        # Prendi il primo record per ispezionare i dati complessi
-                        first_row = dataset.take(1)
-                        if first_row:
-                            first_row = first_row[0]
-                        else:
-                            first_row = None
-                            
-                        schema_list = []
-                        for field in dataset.schema.fields:
-                            col_name = field.name
-                            col_type = field.dataType.simpleString()
-                            is_complex = RobustDataConverter._is_complex_type(field.dataType)
-                            
-                            sample_value = ""
-                            if first_row:
-                                # Gestisce i tipi complessi per mostrare una singola occorrenza
-                                if isinstance(field.dataType, StructType):
-                                    sample_value = str(first_row.asDict()[col_name])
-                                elif isinstance(field.dataType, ArrayType):
-                                    array_values = first_row.asDict()[col_name]
-                                    if array_values and len(array_values) > 0:
-                                        sample_value = str(array_values[0])
-                                else:
-                                    sample_value = "" # Per tipi semplici
-                                    
-                            schema_list.append({
-                                "Nome Colonna": col_name,
-                                "Tipo di Dato": col_type
-                            })
-                        
-                        schema_df = pd.DataFrame(schema_list)
-                        st.dataframe(schema_df, width='stretch')
-                        
-                    except Exception as e:
-                        st.error(f"Errore nella lettura schema: {e}")
-                        st.write("Colonne disponibili:", ", ".join(dataset.columns[:10]))
-                        
-                with col2:
-                    st.write("**Nome Tabella SQL:**", f"`{DatabaseConfig.TEMP_VIEW_NAME}`")
-                    
-                    if isinstance(row_count, int):
-                        st.write("**Numero Righe:**", f"{row_count:,}")
+                # --- Sezione Generalità ---
+                st.write(f"**Nome Tabella SQL:** `{view_name}`")
+                st.write(f"**Numero Righe:** {row_count:,}" if isinstance(row_count, int) else f"**Numero Righe:** {row_count}")
+                st.write(f"**Numero Colonne:** {len(dataset.columns)}")
+                
+                st.markdown("---")
+
+                # --- Sezione Schema Colonne ---
+                st.subheader("Schema Colonne")
+                try:
+                    schema_list = []
+                    complex_fields = {}
+                    processed_complex_types = set()
+
+                    # Prendi il primo record per ispezionare i dati complessi
+                    first_row = dataset.take(1)
+                    if first_row:
+                        first_row = first_row[0]
                     else:
-                        st.write("**Numero Righe:**", row_count)
-                        
-                    st.write("**Numero Colonne:**", len(dataset.columns))
+                        first_row = None
+
+                    # Itera sui campi dello schema per raccogliere info e campi complessi
+                    for field in dataset.schema.fields:
+                        col_name = field.name
+                        col_type = field.dataType.simpleString()
+                        is_complex = RobustDataConverter._is_complex_type(field.dataType)
+
+                        display_type = "Tipo Complesso - Vedi dettagli sotto" if is_complex else col_type
+
+                        schema_list.append({
+                            "Nome Colonna": col_name,
+                            "Tipo di Dato": display_type,
+                        })
+
+                        if is_complex and col_name not in processed_complex_types:
+                            complex_fields[col_name] = field.dataType
+                            processed_complex_types.add(col_name)
+
+                    # Mostra la tabella dello schema del DataFrame principale
+                    schema_df = pd.DataFrame(schema_list)
+                    st.dataframe(schema_df, width='stretch')
+
+                    st.markdown("---")
+
+                    # --- Sezione Dettagli Campi Complessi (una tabella per ciascuno, senza ripetizioni) ---
+                    st.subheader("Dettagli Campi Complessi")
+                    if not complex_fields:
+                        st.info("ℹ️ Nessun campo complesso (STRUCT o ARRAY) trovato nel dataset principale.")
+                    else:
+                        for col_name, complex_type in complex_fields.items():
+                            st.markdown(f"**Campo:** `{col_name}`")
+                            
+                            # Genera una tabella per lo schema del campo complesso
+                            details_list = []
+                            if isinstance(complex_type, StructType):
+                                for sub_field in complex_type.fields:
+                                    is_complex = RobustDataConverter._is_complex_type(sub_field.dataType)
+                                    display_type = "Tipo Complesso - Vedi dettagli nella relativa tabella" if is_complex else sub_field.dataType.simpleString()
+                                    details_list.append({
+                                        "Nome Campo": sub_field.name,
+                                        "Tipo di Dato": display_type
+                                    })
+                            elif isinstance(complex_type, ArrayType):
+                                element_type = complex_type.elementType
+                                if isinstance(element_type, StructType):
+                                    for sub_field in element_type.fields:
+                                        is_complex = RobustDataConverter._is_complex_type(sub_field.dataType)
+                                        display_type = "Tipo Complesso - Vedi dettagli nella relativa tabella" if is_complex else sub_field.dataType.simpleString()
+                                        details_list.append({
+                                            "Nome Campo": sub_field.name,
+                                            "Tipo di Dato": display_type
+                                        })
+                                else:
+                                    details_list.append({
+                                        "Nome Campo": "element",
+                                        "Tipo di Dato": element_type.simpleString()
+                                    })
+                            
+                            details_df = pd.DataFrame(details_list)
+                            st.dataframe(details_df, width='stretch')
+                            st.markdown("---")
+
+                except Exception as e:
+                    st.error(f"❌ Errore nella lettura dello schema o dei campi complessi: {e}")
+                    st.write("Colonne disponibili:", ", ".join(dataset.columns[:10]))
     
 
 def show_simplified_editor_tab(query_engine, dataset):
@@ -466,20 +377,71 @@ def show_simplified_editor_tab(query_engine, dataset):
     all_templates = get_twitter_query_templates()
     
     for category, queries in all_templates.items():
-        with st.expander(category):
-            for name, query in queries.items():
-                with st.expander(name):
-                    st.markdown(f"**{name}**")
-                    col1, col2 = st.columns([4, 1])
+        with st.expander(f"**{category}**", expanded=False):
+            for name, query_data in queries.items():
+                
+                query_text = query_data.get('query', '# Errore: Query non trovata')
+                charts_config = query_data.get('charts', [])
+
+                st.markdown(f"##### {name}")
+                
+                col_query, col_charts, col_edit = st.columns([4, 2, 1])
+                
+                with col_query:
+                    st.code(query_text, language="sql")
+                
+                # --- Colonna 2: Blocco con i grafici correlati ---
+                with col_charts:
+                    with st.container(border=True):
+                        if charts_config:
+                            st.markdown("**📊 Grafici Predefiniti:**")
+                            for chart in charts_config:
+                                chart_type = chart.get('type', 'N/D')
+                                x_axis = chart.get('x', 'N/D')
+                                y_axis = chart.get('y', '')
+                                
+                                if y_axis:
+                                    st.markdown(
+                                        f"- Tipo Grafico: **{chart_type}**\n"
+                                        f"  - x: `{x_axis}`\n"
+                                        f"  - y: `{y_axis}`"
+                                    )
+                                else:
+                                    st.markdown(
+                                        f"Tipo Grafico: **{chart_type}**\n"
+                                        f"  - x: `{x_axis}`"
+                                    )
+                        else:
+                            st.info("Nessun grafico predefinito.")
                     
-                    with col1:
-                        st.code(query, language="sql")
+
+                # --- Colonna 4: Pulsanti modifica/elimina ---
+                with col_edit:
+                    #st.write("") # Spazio per allineare
+
+                    if st.button("▶️", key=f"template_{category}_{name}", help="Use query", width="stretch"):
+                        st.session_state.selected_template = query_text
+                        st.success("✅ Template copiato!")
+                        st.rerun()
                     
-                    with col2:
-                        if st.button("Usa", key=f"template_{category}_{name}"):
-                            st.session_state.selected_template = query
-                            st.success("✅ Template copiato!")
-                            st.rerun()
+                    # Pulsante modifica
+                    if st.button("✏️", key=f"edit_{category}_{name}", help="Modifica query", width="stretch"):
+                        # Prepara i dati per la modifica
+                        edit_data = {
+                            'category': category,
+                            'name': name,
+                            'query': query_text,
+                            'charts': charts_config
+                        }
+                        show_save_template_popup(query_text, mode='edit', existing_data=edit_data)
+                    
+                    # Pulsante elimina
+                    if st.button("🗑️", key=f"delete_{category}_{name}", help="Elimina query", width="stretch"):
+                        show_delete_confirmation_dialog(category, name)
+                
+                # Aggiungiamo un separatore visivo tra le query
+                st.markdown("---")
+
     
     st.markdown("### ✏️ Editor SQL")
     
@@ -487,7 +449,6 @@ def show_simplified_editor_tab(query_engine, dataset):
     
     if 'selected_template' in st.session_state:
         default_query = st.session_state.selected_template
-        del st.session_state.selected_template
         st.info("✅ Template caricato nell'editor!")
     
     query_text = st.text_area(
@@ -539,6 +500,8 @@ def show_simplified_editor_tab(query_engine, dataset):
         
         with st.spinner("⚡ Esecuzione query in corso..."):
             result = query_engine.execute_custom_query_safe(query_text, result_limit)
+            if 'selected_template' in st.session_state:
+                del st.session_state.selected_template
             
             if result['success']:
                 data = result['data']
@@ -604,13 +567,92 @@ def show_simplified_editor_tab(query_engine, dataset):
             if len(display_data) > display_limit:
                 st.info(f"Mostrando {display_limit} di {len(display_data)} righe.")
 
+        with st.expander("📊 Visualizza Grafici e Analisi"):
+            show_analytics_page()
 
-def show_save_template_popup(query_text: str):
-    """Mostra popup per salvare template personalizzato"""
 
-    @st.dialog("💾 Salva Query")
+def show_delete_confirmation_dialog(category: str, name: str):
+    """Mostra dialog di conferma per eliminazione query"""
+    
+    @st.dialog(f"🗑️ Elimina Query: {name}")
+    def delete_confirmation_dialog():
+        st.warning(f"⚠️ Sei sicuro di voler eliminare la query **'{name}'** dalla categoria **'{category}'**?")
+        st.write("Questa azione non può essere annullata.")
+        
+        col1, col2 = st.columns(2)
+        
+        deleted = False
+
+        with col1:
+            if st.button("✅ Sì, elimina", type="primary", use_container_width=True):
+                # Procedi con l'eliminazione
+                try:
+                    file_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'custom_query.json')
+                    templates = get_twitter_query_templates()
+                    
+                    # Rimuovi la query
+                    if category in templates and name in templates[category]:
+                        del templates[category][name]
+                        
+                        # Se la categoria è vuota, rimuovila
+                        if not templates[category]:
+                            del templates[category]
+                        
+                        # Salva il file aggiornato
+                        with open(file_path, 'w', encoding='utf-8') as f:
+                            json.dump(templates, f, indent=4, ensure_ascii=False)
+                        
+                        deleted = True
+                        
+                        # Aggiorna anche la sessione se presente
+                        if ('custom_templates' in st.session_state and 
+                            category in st.session_state.custom_templates and 
+                            name in st.session_state.custom_templates[category]):
+                            del st.session_state.custom_templates[category][name]
+                            if not st.session_state.custom_templates[category]:
+                                del st.session_state.custom_templates[category]
+                        
+                    else:
+                        st.error("❌ Query non trovata nei template.")
+                    
+                except Exception as e:
+                    st.error(f"❌ Errore durante l'eliminazione: {e}")
+                
+                import time
+                time.sleep(1)
+                st.rerun()
+        
+        with col2:
+            if st.button("❌ Annulla", use_container_width=True):
+                st.rerun()
+
+        if deleted:
+            st.success(f"✅ Query '{name}' eliminata con successo!")
+    
+    delete_confirmation_dialog()
+
+
+def show_save_template_popup(query_text: str, mode: str = 'new', existing_data: Dict = None):
+    """Mostra popup per salvare o modificare un template personalizzato."""
+
+    dialog_title = "💾 Salva Nuova Query" if mode == 'new' else "✏️ Modifica Query"
+    
+    @st.dialog(dialog_title)
     def save_template_dialog():
         current_query = query_text
+
+        if mode == 'edit' and existing_data:
+            # Se siamo in modifica, pre-popoliamo i campi
+            st.session_state.setdefault('charts_config', existing_data.get('charts', []))
+            default_category = existing_data.get('category', '')
+            default_name = existing_data.get('name', '')
+            query_to_save = existing_data.get('query', query_text)
+            st.info(f"Stai modificando la query '{default_name}' nella categoria '{default_category}'.")
+        else:
+            st.session_state.setdefault('charts_config', [])
+            default_category = ""
+            default_name = ""
+            query_to_save = query_text
 
         if not current_query.strip():
             st.error("❌ Nessuna query presente nell'editor!")
@@ -635,26 +677,123 @@ def show_save_template_popup(query_text: str):
 
             if category_type == "Esistente":
                 if existing_categories:
-                    category = st.selectbox("Categoria:", existing_categories, key="existing_category_select")
+                    # In modalità edit, pre-seleziona la categoria corrente se esiste
+                    default_index = 0
+                    if mode == 'edit' and default_category in existing_categories:
+                        default_index = existing_categories.index(default_category)
+                    
+                    category = st.selectbox(
+                        "Categoria:", 
+                        existing_categories, 
+                        index=default_index,
+                        key="existing_category_select"
+                    )
                 else:
                     st.info("Nessuna categoria esistente trovata. Sarà creata una nuova categoria.")
-                    category = st.text_input("Nome della nuova categoria:", value="Custom", key="new_category_text_1")
+                    category = st.text_input(
+                        "Nome della nuova categoria:", 
+                        value=default_category if mode == 'edit' else "Custom", 
+                        key="new_category_text_1"
+                    )
             else:
-                category = st.text_input("Nome della nuova categoria:", placeholder="es. Analisi Custom", key="new_category_text_2")
+                category = st.text_input(
+                    "Nome della nuova categoria:", 
+                    value=default_category if mode == 'edit' else "",
+                    placeholder="es. Analisi Custom", 
+                    key="new_category_text_2"
+                )
 
         with st.form("save_template_form"):
             template_name = st.text_input(
                 "Nome query:", 
+                value=default_name if mode == 'edit' else "",
                 placeholder="es. example query"
             )
             
             st.write("**Query da salvare:**")
             st.code(current_query, language="sql")
 
+            # ----------------- SEZIONE GRAFICI -----------------
+            st.markdown("### 📊 Configurazione Grafici")
+
+            if "charts_config" not in st.session_state:
+                st.session_state.charts_config = []
+
+            try:
+                columns = get_query_columns(current_query, st.session_state.spark_manager.get_spark_session())
+            except Exception:
+                columns = []
+
+            add_chart = st.form_submit_button("➕ Aggiungi grafico")
+            if add_chart:
+                st.session_state.charts_config.append({"type": "Barre", "x": None, "y": None})
+                st.rerun()
+
+            types = ["Barre", "Linee", "Torta", "Heatmap"]
+            
+            chart_to_remove = None
+            
+            for i, cfg in enumerate(st.session_state.charts_config):
+                with st.expander(f"Grafico {i+1}", expanded=True):
+                    col_config, col_remove = st.columns([5, 1])
+                    
+                    with col_config:
+                        cfg["type"] = st.selectbox(
+                            "Tipo di grafico:",
+                            types,
+                            index=types.index(cfg.get("type", "Barre")),
+                            key=f"chart_type_{i}"
+                        )
+
+                        if columns:
+                            # Pre-seleziona le colonne se esistono nei dati
+                            x_index = 0
+                            if cfg.get("x") and cfg["x"] in columns:
+                                x_index = columns.index(cfg["x"])
+                            
+                            cfg["x"] = st.selectbox(
+                                "Colonna asse X:",
+                                columns,
+                                index=x_index,
+                                key=f"x_col_{i}"
+                            )
+
+                            y_options = [""] + columns
+                            y_index = 0
+                            if cfg.get("y") and cfg["y"] in columns:
+                                y_index = columns.index(cfg["y"]) + 1
+                            
+                            cfg["y"] = st.selectbox(
+                                "Colonna asse Y (se applicabile):",
+                                y_options,
+                                index=y_index,
+                                key=f"y_col_{i}"
+                            )
+                        else:
+                            st.warning("⚠️ Impossibile determinare le colonne dalla query.")
+                    
+                    with col_remove:
+                        st.write("")  # Spazio per allineare verticalmente
+                        st.write("")  # Altro spazio
+                        remove_clicked = st.form_submit_button(
+                            "🗑️", 
+                            key=f"remove_chart_{i}",
+                            help=f"Rimuovi Grafico {i+1}"
+                        )
+                        if remove_clicked:
+                            chart_to_remove = i
+            
+            # Rimuovi il grafico selezionato
+            if chart_to_remove is not None:
+                st.session_state.charts_config.pop(chart_to_remove)
+                st.rerun()
+            # --------------------------------------------------
+
             col_save, col_cancel = st.columns(2)
 
             with col_save:
-                save_submitted = st.form_submit_button("💾 Salva Query", type="primary")
+                save_button_text = "💾 Salva Modifiche" if mode == 'edit' else "💾 Salva Query"
+                save_submitted = st.form_submit_button(save_button_text, type="primary")
 
             with col_cancel:
                 cancel_submitted = st.form_submit_button("❌ Annulla")
@@ -664,6 +803,27 @@ def show_save_template_popup(query_text: str):
                     st.error("❌ Categoria e nome template sono obbligatori!")
                     return
                 
+                if mode == 'edit' and existing_data:
+                    original_category = existing_data.get('category', '')
+                    original_name = existing_data.get('name', '')
+                    
+                    if original_category != category or original_name != template_name:
+                        try:
+                            file_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'custom_query.json')
+                            templates_to_update = get_twitter_query_templates()
+                            
+                            if (original_category in templates_to_update and 
+                                original_name in templates_to_update[original_category]):
+                                del templates_to_update[original_category][original_name]
+                                
+                                if not templates_to_update[original_category]:
+                                    del templates_to_update[original_category]
+                                
+                                with open(file_path, 'w', encoding='utf-8') as f:
+                                    json.dump(templates_to_update, f, indent=4, ensure_ascii=False)
+                        except Exception as e:
+                            st.warning(f"⚠️ Avviso durante la rimozione del template originale: {e}")
+                
                 if 'custom_templates' not in st.session_state:
                     st.session_state.custom_templates = {}
                 
@@ -672,32 +832,132 @@ def show_save_template_popup(query_text: str):
                 
                 st.session_state.custom_templates[category][template_name] = {
                     'query': current_query,
-                    'created_at': pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')
+                    'created_at': pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    'charts': st.session_state.charts_config
                 }
 
                 file_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'custom_query.json')
                 templates_to_save = get_twitter_query_templates()
+                
                 if category not in templates_to_save:
                     templates_to_save[category] = {}
-                templates_to_save[category][template_name] = format_query_for_json(current_query)
+
+                current_query = format_sql_for_json(current_query)
+
+                templates_to_save[category][template_name] = {
+                    "query": current_query,
+                    "charts": st.session_state.charts_config
+                }
+                
                 try:
                     with open(file_path, 'w', encoding='utf-8') as f:
                         json.dump(templates_to_save, f, indent=4, ensure_ascii=False)
-                    st.success(f"✅ Template '{template_name}' salvato nella categoria '{category}' nel file JSON!")
+                    
+                    success_message = (f"✅ Template '{template_name}' modificato con successo!" 
+                                     if mode == 'edit' 
+                                     else f"✅ Template '{template_name}' salvato nella categoria '{category}'!")
+                    st.success(success_message)
                 except Exception as e:
                     st.error(f"❌ Errore durante il salvataggio del file: {e}")
                 
                 import time
                 time.sleep(1)
                 st.rerun()
+
             if cancel_submitted:
                 st.rerun()
 
+    # QUESTA È LA RIGA MANCANTE - CHIAMA EFFETTIVAMENTE LA FUNZIONE!
     save_template_dialog()
 
-def format_query_for_json(query_string: str) -> str:
-    formatted_query = query_string.replace('\t', '\\t').replace('\n', '\\n')
-    return formatted_query
+
+def show_delete_confirmation_dialog(category: str, name: str):
+    """Mostra dialog di conferma per eliminazione query"""
+    
+    @st.dialog(f"🗑️ Elimina Query: {name}")
+    def delete_confirmation_dialog():
+        st.warning(f"⚠️ Sei sicuro di voler eliminare la query **'{name}'** dalla categoria **'{category}'**?")
+        st.write("Questa azione non può essere annullata.")
+        
+        col1, col2 = st.columns(2)
+        
+        deleted = False
+
+        with col1:
+            if st.button("✅ Sì, elimina", type="primary", use_container_width=True):
+                # Procedi con l'eliminazione
+                try:
+                    file_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'custom_query.json')
+                    templates = get_twitter_query_templates()
+                    
+                    # Rimuovi la query
+                    if category in templates and name in templates[category]:
+                        del templates[category][name]
+                        
+                        # Se la categoria è vuota, rimuovila
+                        if not templates[category]:
+                            del templates[category]
+                        
+                        # Salva il file aggiornato
+                        with open(file_path, 'w', encoding='utf-8') as f:
+                            json.dump(templates, f, indent=4, ensure_ascii=False)
+                        
+                        deleted = True
+                        
+                        # Aggiorna anche la sessione se presente
+                        if ('custom_templates' in st.session_state and 
+                            category in st.session_state.custom_templates and 
+                            name in st.session_state.custom_templates[category]):
+                            del st.session_state.custom_templates[category][name]
+                            if not st.session_state.custom_templates[category]:
+                                del st.session_state.custom_templates[category]
+                        
+                    else:
+                        st.error("❌ Query non trovata nei template.")
+                    
+                except Exception as e:
+                    st.error(f"❌ Errore durante l'eliminazione: {e}")
+                
+                import time
+                time.sleep(1)
+                st.rerun()
+        
+        with col2:
+            if st.button("❌ Annulla", use_container_width=True):
+                st.rerun()
+
+        if deleted:
+            st.success(f"✅ Query '{name}' eliminata con successo!")
+    
+    delete_confirmation_dialog()
+
+def get_query_columns(query: str, spark) -> list[str]:
+    """
+    Restituisce la lista di colonne da una query Spark SQL senza eseguire righe.
+    """
+    try:
+        df = spark.sql(query)
+        return df.columns
+    except Exception as e:
+        print(f"Errore estrazione colonne: {e}")
+        return []
+
+
+def format_sql_for_json(sql: str) -> str:
+    """
+    Formatta SQL con newline leggibili e indentazione minima.
+    """
+    sql = sql.strip()
+
+    keywords = ["FROM", "WHERE", "GROUP BY", "ORDER BY", "LIMIT"]
+    for kw in keywords:
+        sql = re.sub(rf"\s+{kw}\b", f"\n{kw}", sql, flags=re.IGNORECASE)
+
+    sql = re.sub(r"SELECT\s+", "SELECT\n    ", sql, flags=re.IGNORECASE)
+    sql = re.sub(r",\s*", ",\n    ", sql)
+    sql = re.sub(r"\n\s+\n", "\n", sql)
+
+    return sql
 
 def show_export_options(result: pd.DataFrame, query_text: str):
     """Opzioni di export dei risultati"""
@@ -758,23 +1018,17 @@ def show_error_suggestions(error: str, query: str):
     
     st.markdown("#### 💡 Suggerimenti per la Risoluzione")
     
-    error_lower = error.lower()
-    
+    error_lower = error.lower()    
     if "table or view not found" in error_lower:
-        st.info(f"🔍 Assicurati di usare il nome tabella corretto: `{DatabaseConfig.TEMP_VIEW_NAME}`")
-    
+        st.info(f"🔍 Assicurati di usare il nome tabella corretto: `{DatabaseConfig.TEMP_VIEW_NAME}`")    
     elif "column" in error_lower and "not found" in error_lower:
-        st.info("🔍 Controlla che i nomi delle colonne siano corretti.")
-    
+        st.info("🔍 Controlla che i nomi delle colonne siano corretti.")    
     elif "syntax error" in error_lower:
-        st.info("🔍 Controlla la sintassi SQL. Assicurati che tutte le parentesi siano bilanciate.")
-    
+        st.info("🔍 Controlla la sintassi SQL. Assicurati che tutte le parentesi siano bilanciate.")    
     elif "type" in error_lower and "conversion" in error_lower:
-        st.info("⚙️ Problema di conversione tipo dati. Prova query più semplici.")
-    
+        st.info("⚙️ Problema di conversione tipo dati. Prova query più semplici.")   
     elif "memory" in error_lower or "out of" in error_lower:
         st.info("💾 Prova a limitare i risultati o usare filtri WHERE più restrittivi.")
-    
     else:
         st.info("📖 Controlla la sintassi SQL e assicurati che la query sia compatibile con Spark SQL.")
 

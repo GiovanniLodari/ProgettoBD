@@ -158,7 +158,7 @@ def main():
                             logger.error(f"Errore nella conversione del DataFrame: {e}", exc_info=True)
                             return None
                         
-                with st.spinner('🧹 Cleaning the dataset...'):
+                with st.spinner('Cleaning dataset...'):
                     cleaned_data = DataLoader.clean_twitter_dataframe(combined_data)
 
                     if cleaned_data:
