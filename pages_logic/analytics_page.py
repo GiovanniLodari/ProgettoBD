@@ -9,7 +9,8 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
-from typing import Dict, Any, Tuple, Optional
+from typing import Dict, Any, Tuple, Optional, List
+from utils.utils import get_twitter_query_templates
 
 ### 1. CLASSE DI ANALISI PRINCIPALE
 # ==============================================================================
@@ -303,10 +304,8 @@ def execute_smart_aggregation(general_analytics: GeneralAnalytics, group_by_col:
 
 def show_analytics_page():
     """
-    Funzione principale che orchestra l'intera pagina, dando priorità all'analisi automatica.
+    Funzione principale per visualizzare analisi e grafici, integrata con il sistema di metadati JSON
     """
-    st.title("✨ Analisi Visiva Automatica")
-    
     dataset = st.session_state.get('last_query_result')
     if dataset is None:
         st.warning("Esegui una query SQL per caricare un dataset prima di accedere alle analisi.")
@@ -318,25 +317,56 @@ def show_analytics_page():
         except Exception as e:
             st.error(f"Errore nella conversione del dataset in formato pandas: {e}")
             return
-            
+    
+    if dataset.empty:
+        st.warning("Il dataset è vuoto, nessuna analisi possibile.")
+        return
+    
+    # Controlla se ci sono grafici predefiniti dalla query corrente
+    query_text = st.session_state.get('last_query_text', '')
+    predefined_charts = find_charts_for_query(query_text)
+    
+    # SEZIONE 1: GRAFICI PREDEFINITI (se disponibili)
+    if predefined_charts:
+        st.markdown("### 🎯 Grafici Predefiniti")
+        st.success(f"Trovati {len(predefined_charts)} grafici configurati per questa query")
+        
+        visualizer = ChartVisualizer()
+        visualizer.display_charts_from_config(dataset, predefined_charts)
+        
+        st.markdown("---")
+        
+        # Opzione per nascondere l'analisi automatica se ci sono grafici predefiniti
+        show_auto_analysis = st.checkbox(
+            "Mostra anche analisi automatica", 
+            value=False,
+            help="Visualizza analisi automatica aggiuntiva oltre ai grafici predefiniti"
+        )
+        
+        if not show_auto_analysis:
+            return
+    
+    # SEZIONE 2: ANALISI AUTOMATICA
+    st.markdown("### 🤖 Analisi Automatica")
+    
     general_analytics = GeneralAnalytics(dataset)
-
-    # 1. Tenta l'analisi automatica
-    with st.spinner("🤖 Eseguo l'analisi automatica del dataset..."):
+    
+    # Tenta l'analisi automatica
+    with st.spinner("Eseguo l'analisi automatica del dataset..."):
         automatic_result = run_automatic_analysis(general_analytics, dataset)
 
-    # 2. Se l'analisi automatica ha successo, mostra i risultati
+    # Se l'analisi automatica ha successo, mostra i risultati
     if automatic_result:
-        st.success("🎉 Analisi automatica completata!")
+        st.success("Analisi automatica completata!")
         display_charts(automatic_result["result_df"], automatic_result["chart_suggestions"])
         
         with st.expander("📄 Visualizza i dati e gli insights automatici"):
-            st.dataframe(automatic_result["result_df"], width='stretch')
+            st.dataframe(automatic_result["result_df"], use_container_width=True)
             display_automatic_insights(automatic_result["result_df"], *automatic_result["params"])
 
-    # 3. Offri sempre l'opzione manuale in un expander
+    # SEZIONE 3: ANALISI MANUALE (sempre disponibile)
     st.markdown("---")
-    with st.expander("🔧 Crea un'analisi personalizzata", expanded=(not automatic_result)):
+    with st.expander("🔧 Crea un'analisi personalizzata", expanded=(not automatic_result and not predefined_charts)):
         manual_config = show_manual_aggregation_ui(dataset)
         
         if manual_config["execute"]:
@@ -346,3 +376,191 @@ def show_analytics_page():
             execute_smart_aggregation(
                 general_analytics, group_by_col, agg_col, agg_type, result_limit, sort_desc
             )
+
+
+# FUNZIONI DI SUPPORTO NECESSARIE
+
+def find_charts_for_query(query_text: str) -> List[Dict[str, Any]]:
+    """
+    Trova i grafici predefiniti per una query specifica confrontando con i template salvati
+    """
+    if not query_text.strip():
+        return []
+    
+    query_normalized = normalize_query_for_comparison(query_text)
+    
+    try:
+        # Carica i template dal JSON
+        all_templates = get_twitter_query_templates()
+        
+        for category, queries in all_templates.items():
+            for name, query_data in queries.items():
+                if isinstance(query_data, dict) and 'query' in query_data:
+                    template_query = query_data.get('query', '')
+                    template_normalized = normalize_query_for_comparison(template_query)
+                    
+                    # Confronta query normalizzate
+                    if query_normalized == template_normalized:
+                        charts = query_data.get('charts', [])
+                        if charts:
+                            st.info(f"Grafici caricati dal template: {name} ({category})")
+                        return charts
+        
+    except Exception as e:
+        st.error(f"Errore nel caricamento dei grafici predefiniti: {e}")
+    
+    return []
+
+
+def normalize_query_for_comparison(query: str) -> str:
+    """
+    Normalizza una query per il confronto rimuovendo differenze non significative
+    """
+    import re
+    
+    if not query:
+        return ""
+    
+    # Rimuovi commenti SQL
+    query = re.sub(r'--.*?$', '', query, flags=re.MULTILINE)
+    
+    # Rimuovi spazi extra, newline e tab
+    query = re.sub(r'\s+', ' ', query.strip())
+    
+    # Converti in minuscolo per confronto case-insensitive
+    return query.lower()
+
+
+class ChartVisualizer:
+    """
+    Classe per gestire la visualizzazione automatica dei grafici basata sui metadati JSON
+    """
+    
+    def __init__(self):
+        self.color_palettes = {
+            'default': px.colors.qualitative.Set3,
+            'viridis': px.colors.sequential.Viridis,
+            'plasma': px.colors.sequential.Plasma,
+        }
+    
+    def validate_chart_config(self, chart_config: Dict[str, Any], df_columns: List[str]) -> Tuple[bool, str]:
+        """Valida la configurazione del grafico"""
+        if not isinstance(chart_config, dict):
+            return False, "Configurazione non valida"
+        
+        chart_type = chart_config.get('type', '').lower()
+        x_col = chart_config.get('x')
+        y_col = chart_config.get('y')
+        
+        if chart_type in ['barre', 'linee', 'heatmap']:
+            if not x_col or x_col not in df_columns:
+                return False, f"Colonna X '{x_col}' non trovata nel dataset"
+            if chart_type in ['linee', 'heatmap'] and (not y_col or y_col not in df_columns):
+                return False, f"Colonna Y '{y_col}' richiesta per {chart_type}"
+        
+        elif chart_type == 'torta':
+            if not x_col or x_col not in df_columns:
+                return False, f"Colonna etichette '{x_col}' non trovata"
+        
+        return True, ""
+    
+    def create_chart(self, df: pd.DataFrame, chart_config: Dict[str, Any]) -> Optional[go.Figure]:
+        """Crea un grafico basato sulla configurazione"""
+        if df.empty:
+            return None
+        
+        # Valida configurazione
+        is_valid, error_msg = self.validate_chart_config(chart_config, df.columns.tolist())
+        if not is_valid:
+            st.error(f"Errore configurazione grafico: {error_msg}")
+            return None
+        
+        chart_type = chart_config.get('type', '').lower()
+        x_col = chart_config.get('x')
+        y_col = chart_config.get('y')
+        
+        try:
+            fig = None
+            
+            if chart_type == 'barre':
+                if not y_col or y_col == '':
+                    # Conta occorrenze
+                    counts = df[x_col].value_counts().head(20)
+                    fig = px.bar(x=counts.values, y=counts.index, orientation='h',
+                               title=f"Distribuzione di {x_col}")
+                    fig.update_layout(yaxis={'categoryorder': 'total ascending'})
+                else:
+                    # Aggrega per Y
+                    if df[x_col].dtype == 'object' and df[y_col].dtype in ['int64', 'float64']:
+                        agg_df = df.groupby(x_col)[y_col].sum().reset_index()
+                        agg_df = agg_df.sort_values(y_col, ascending=False).head(20)
+                        fig = px.bar(agg_df, x=x_col, y=y_col, title=f"{y_col} per {x_col}")
+                    else:
+                        fig = px.bar(df.head(20), x=x_col, y=y_col, title=f"{y_col} per {x_col}")
+            
+            elif chart_type == 'linee':
+                df_sorted = df.sort_values(x_col) if df[x_col].dtype in ['int64', 'float64', 'datetime64[ns]'] else df
+                fig = px.line(df_sorted.head(500), x=x_col, y=y_col, 
+                            title=f"Trend di {y_col} rispetto a {x_col}", markers=True)
+            
+            elif chart_type == 'torta':
+                if not y_col or y_col == '':
+                    counts = df[x_col].value_counts().head(10)
+                    fig = px.pie(values=counts.values, names=counts.index, title=f"Distribuzione di {x_col}")
+                else:
+                    if df[x_col].dtype == 'object':
+                        agg_df = df.groupby(x_col)[y_col].sum().reset_index().head(10)
+                        fig = px.pie(agg_df, values=y_col, names=x_col, title=f"Distribuzione di {y_col} per {x_col}")
+            
+            elif chart_type == 'heatmap':
+                if df[x_col].dtype in ['int64', 'float64'] and df[y_col].dtype in ['int64', 'float64']:
+                    corr_df = df[[x_col, y_col]].corr()
+                    fig = px.imshow(corr_df, title=f"Correlazione tra {x_col} e {y_col}")
+                else:
+                    crosstab = pd.crosstab(df[y_col], df[x_col])
+                    if crosstab.size > 400:
+                        crosstab = crosstab.iloc[:20, :20]
+                    fig = px.imshow(crosstab, title=f"Heatmap: {y_col} vs {x_col}")
+            
+            if fig:
+                fig.update_layout(height=500, template='plotly_white', 
+                                margin=dict(t=60, b=60, l=60, r=60))
+            
+            return fig
+            
+        except Exception as e:
+            st.error(f"Errore nella creazione del grafico {chart_type}: {e}")
+            return None
+    
+    def display_charts_from_config(self, df: pd.DataFrame, charts_config: List[Dict[str, Any]]):
+        """Visualizza tutti i grafici dalla configurazione JSON"""
+        if not charts_config:
+            st.info("Nessun grafico configurato per questa query")
+            return
+        
+        if len(charts_config) == 1:
+            # Un solo grafico
+            chart_config = charts_config[0]
+            chart_type = chart_config.get('type', 'Grafico')
+            st.markdown(f"**{chart_type.title()}**")
+            fig = self.create_chart(df, chart_config)
+            if fig:
+                st.plotly_chart(fig, use_container_width=True)
+        else:
+            # Multipli grafici con tab
+            tab_names = []
+            for i, config in enumerate(charts_config):
+                chart_type = config.get('type', f'Grafico {i+1}')
+                icon = {'barre': '📊', 'linee': '📈', 'torta': '🥧', 'heatmap': '🔥'}.get(chart_type.lower(), '📈')
+                tab_names.append(f"{icon} {chart_type.title()}")
+            
+            tabs = st.tabs(tab_names)
+            
+            for tab, chart_config in zip(tabs, charts_config):
+                with tab:
+                    fig = self.create_chart(df, chart_config)
+                    if fig:
+                        st.plotly_chart(fig, use_container_width=True)
+                        
+                        with st.expander("ℹ️ Info Grafico"):
+                            st.json(chart_config)

@@ -15,6 +15,7 @@ import os, json
 import re
 import traceback
 from typing import Optional, Dict, Any, List, Tuple
+from utils.utils import get_twitter_query_templates
 from pages_logic.analytics_page import show_analytics_page
 
 logger = logging.getLogger(__name__)
@@ -185,49 +186,6 @@ class EnhancedQueryEngine(QueryEngine):
         })
         
         return stats
-
-def get_twitter_query_templates():
-    """
-    Carica i template delle query da un file JSON, garantendo la retrocompatibilità.
-    Converte al volo le query in formato stringa (vecchio) nel formato oggetto (nuovo).
-    """
-    file_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'custom_query.json')
-    
-    try:
-        with open(file_path, 'r', encoding='utf-8') as f:
-            templates = json.load(f)
-
-        # Itera su categorie e query per normalizzare la struttura dati
-        for category, queries in templates.items():
-            for query_name, query_value in queries.items():
-                
-                # MODIFICA CHIAVE: Controlla il formato di ogni query
-                if isinstance(query_value, str):
-                    # Se è una stringa (VECCHIO FORMATO), la convertiamo nel nuovo formato
-                    formatted_query = query_value.format(temp_view_name=DatabaseConfig.TEMP_VIEW_NAME)
-                    templates[category][query_name] = {
-                        "query": formatted_query,
-                        "charts": []  # Aggiungiamo una lista di grafici vuota
-                    }
-                elif isinstance(query_value, dict) and 'query' in query_value:
-                    # Se è già un dizionario (NUOVO FORMATO), formattiamo solo la query
-                    query_value['query'] = query_value['query'].format(
-                        temp_view_name=DatabaseConfig.TEMP_VIEW_NAME
-                    )
-                else:
-                    # Se il formato non è riconosciuto, lo segnaliamo e lo saltiamo
-                    print(f"Attenzione: la query '{query_name}' ha un formato non valido e sarà ignorata.")
-                    # Potresti anche decidere di rimuoverla per evitare errori a valle
-                    # del templates[category][query_name] 
-        
-        return templates
-    
-    except FileNotFoundError:
-        st.error(f"Errore: file dei template '{file_path}' non trovato.")
-        return {}
-    except Exception as e:
-        st.error(f"Errore durante la lettura o la normalizzazione del file JSON: {e}")
-        return {}
 
 def show_simplified_custom_query_page():
     """Mostra la pagina semplificata per query personalizzate"""
