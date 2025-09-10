@@ -8,4 +8,5 @@ setuptools
 streamlit-tree-select
 scikit-learn
 xgboost
+prophet
 statsmodels
