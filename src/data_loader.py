@@ -339,7 +339,6 @@ class SchemaManager:
         Returns:
             str: Tipo di dati rilevato ('twitter', 'generic')
         """
-        # Controlli per identificare dati Twitter
         twitter_indicators = ['created_at', 'user', 'entities', 'text', 'id', 'id_str', 'retweet_count']
         
         if isinstance(sample_data, dict):
@@ -365,8 +364,7 @@ class SchemaManager:
                 .option("allowBackslashEscapingAnyCharacter", "true") \
                 .option("allowUnquotedControlChars", "true") \
                 .option("dropFieldIfAllNull", "false") \
-                .option("prefersDecimal", "false")  # Evita problemi con decimali molto grandi
-                #.option("multiline", "true")
+                .option("prefersDecimal", "false")
                 
         elif file_format == 'csv':
             reader = spark.read \
@@ -381,17 +379,14 @@ class SchemaManager:
                 .option("nullValue", "") \
                 .option("emptyValue", "") \
                 .option("inferSchema", "true" if custom_schema is None else "false")
-                #.option("multiline", "true")
                 
         elif file_format == 'parquet':
             reader = spark.read
-            # Parquet ha schema embedded, meno problematico
             
         else:
             # Default a JSON
             reader = SchemaManager.create_permissive_reader(spark, 'json', custom_schema)
             
-        # Applica lo schema se fornito
         if custom_schema is not None:
             reader = reader.schema(custom_schema)
             logger.info(f"Schema applicato: {len(custom_schema.fields)} campi")
@@ -414,7 +409,6 @@ class SchemaManager:
         """
         logger.info(f"Caricamento con schema e fallback: {file_path} (formato: {file_format}, schema: {schema_type})")
         
-        # 1. Determina lo schema da usare (mantiene la logica esistente)
         target_schema = None
         if schema_type == 'twitter':
             target_schema = SchemaManager.get_twitter_schema()
@@ -423,10 +417,8 @@ class SchemaManager:
             target_schema = SchemaManager.get_generic_schema()
             logger.info("Usando schema generico (inferenza)")
         elif schema_type == 'auto':
-            # Prova a rilevare automaticamente
             if file_format == 'json':
                 try:
-                    # Leggi un piccolo campione per auto-detection
                     with open(file_path, 'r', encoding='utf-8') as f:
                         import json
                         first_line = f.readline()
@@ -443,10 +435,8 @@ class SchemaManager:
                     logger.warning(f"Auto-detection fallita: {e}, uso inferenza")
                     target_schema = None
         
-        # 2. Crea il reader permissivo con lo schema appropriato
         reader = SchemaManager.create_permissive_reader(spark, file_format, target_schema)
         
-        # 3. Carica i dati
         try:
             if file_format == 'json':
                 df = reader.json(file_path)
@@ -509,42 +499,34 @@ class SchemaManager:
                 logger.error(f"Anche il fallback è fallito: {e2}")
                 return None
 
-    # MANTIENI tutte le funzioni esistenti di normalizzazione e unione
     @staticmethod
     def normalize_dataframe_to_schema(df: SparkDataFrame, target_schema: StructType) -> SparkDataFrame:
         """
         MANTIENE la funzione originale per normalizzazione - non cambia nulla
         """
         try:
-            # Ottieni le colonne esistenti e target
             existing_cols = set(df.columns)
             target_fields = {field.name: field for field in target_schema.fields}
             
-            # Lista delle colonne finali nell'ordine dello schema target
             select_expressions = []
             
             for field in target_schema.fields:
                 col_name = field.name
                 
                 if col_name in existing_cols:
-                    # Colonna esistente: cast al tipo corretto
                     try:
                         select_expressions.append(
                             F.col(col_name).cast(field.dataType).alias(col_name)
                         )
                     except Exception as cast_error:
-                        # Se il cast fallisce, usa null
                         logger.warning(f"Cast fallito per {col_name}: {cast_error}")
                         select_expressions.append(
                             F.lit(None).cast(field.dataType).alias(col_name)
                         )
                 else:
-                    # Colonna mancante: aggiungi null del tipo corretto
                     select_expressions.append(
                         F.lit(None).cast(field.dataType).alias(col_name)
-                    )
-            
-            # Seleziona tutte le colonne nell'ordine dello schema target
+                    )            
             normalized_df = df.select(*select_expressions)
             
             return normalized_df
@@ -552,7 +534,7 @@ class SchemaManager:
         except Exception as e:
             logger.error(f"Errore nella normalizzazione dello schema: {str(e)}")
             return df  # Fallback finale
-
+    
     @staticmethod
     def safe_union_dataframes(df1: SparkDataFrame, df2: SparkDataFrame, target_schema: StructType) -> SparkDataFrame:
         """
@@ -624,9 +606,10 @@ class DataLoader:
             logger.error(f"Errore nel caricamento del file {file_path}: {str(e)}", exc_info=True)
             return None
 
-    # Sostituisci la tua funzione esistente in DataLoader con questa
-
     def load_multiple_files(self, file_paths: List[str], file_format: str = None, schema_type: str = 'auto') -> Optional[SparkDataFrame]:
+        """"Carica e unisce più file in un unico DataFrame. Implementa inoltre, la normalizzazione dei dati 
+            rispetto allo schema Twitter e la conversione di tali dati in formato Parquet per usi futuri."""
+        
         with st.spinner(f"Reading {len(file_paths)} files..."):
             logger.info(f"Avvio caricamento di {len(file_paths)} file")
             
@@ -637,7 +620,6 @@ class DataLoader:
 
             progress_bar = st.progress(0)
 
-            # --- SETUP: Definisci lo schema master e la cartella di output ---
             master_schema = self.schema_manager.get_twitter_schema()
             if not master_schema:
                 logger.error("Impossibile ottenere lo schema Twitter master. Caricamento interrotto.")
@@ -645,50 +627,55 @@ class DataLoader:
             logger.info("Utilizzo dello schema Twitter come 'master schema' per la normalizzazione.")
             
             home_directory = os.path.expanduser('~')
-            schema_dir = os.path.join(home_directory, 'Desktop', 'schemas_output')
-            os.makedirs(schema_dir, exist_ok=True)
+            temp_parquet_dir = os.path.join(home_directory, 'Desktop', 'Files_parquet')
+            os.makedirs(temp_parquet_dir, exist_ok=True)
             
             dataframes_normalizzati = []
 
-            temp_parquet_dir = "temp_parquet_output"
-            if os.path.exists(temp_parquet_dir):
-                shutil.rmtree(temp_parquet_dir)
-            os.makedirs(temp_parquet_dir)
+            # Directory per salvare gli schemi inferiti
+            # temp_parquet_dir = "temp_parquet_output"
+            # if os.path.exists(temp_parquet_dir):
+            #     shutil.rmtree(temp_parquet_dir)
+            # os.makedirs(temp_parquet_dir)
 
-            # --- FASE 1: Carica e Normalizza ogni DataFrame individualmente ---
+            # Caricamento e Normalizzazione di ogni DataFrame
             for idx, file_path in enumerate(file_paths):
                 try:
                     logger.info(f"--- Processando file {idx+1}/{len(file_paths)}: {file_path} ---")
                     current_format = file_format or self._detect_format(file_path)
-                    
-                    # 1a. Carica il singolo file lasciando che Spark indovini il suo schema specifico.
-                    df = self.schema_manager.load_with_schema_and_fallback(
-                        spark, file_path, current_format, 'auto' # Forza l'inferenza per massima flessibilità
-                    )
-                    
-                    if df is None:
-                        logger.warning(f"Salto del file {file_path} perché il caricamento ha restituito None.")
-                        continue
-                    
-                    # 1b. Salva lo schema inferito per questo specifico file (per debug)
-                    try:
-                        schema_dict = json.loads(df.schema.json())
-                        schema_formatted_string = json.dumps(schema_dict, indent=4)
-                        base_filename = os.path.basename(file_path)
-                        schema_file_path = os.path.join(schema_dir, f"schema_{base_filename}.json")
-                        with open(schema_file_path, "w", encoding="utf-8") as f:
-                            f.write(schema_formatted_string)
-                        logger.info(f"Schema inferito per {base_filename} salvato in: {schema_file_path}")
-                    except Exception as schema_error:
-                        logger.error(f"Impossibile salvare lo schema per il file {file_path}: {schema_error}")
 
-                    df_normalizzato = self.schema_manager.normalize_dataframe_to_schema(df, master_schema)
-                    df_normalizzato = df_normalizzato.withColumn("source_file", F.lit(os.path.basename(file_path))) \
-                                                    .withColumn("source_id", F.lit(idx + 1))
-                    df_normalizzato.write.mode("append").parquet(temp_parquet_dir)
-                    dataframes_normalizzati.append(df_normalizzato)
 
-                    logger.info(f"File {file_path} salvato correttamente in formato Parquet.")
+                    if current_format == 'parquet':
+                        shutil.copy(file_path, os.path.join(temp_parquet_dir, os.path.basename(file_path)))
+                        logger.info(f"File Parquet '{os.path.basename(file_path)}' copiato direttamente.")
+
+                    elif current_format == 'json':
+                        df = self.schema_manager.load_with_schema_and_fallback(
+                            spark, file_path, current_format, 'auto'  # Lasciamo che spark usi l'inferenza automatica 
+                        )
+                            
+                        if df is None:
+                            logger.warning(f"Salto del file {file_path} perché il caricamento ha restituito None.")
+                            continue
+                        
+                    # Salva lo schema inferito per questo file
+                    # try:
+                    #     schema_dict = json.loads(df.schema.json())
+                    #     schema_formatted_string = json.dumps(schema_dict, indent=4)
+                    #     base_filename = os.path.basename(file_path)
+                    #     schema_file_path = os.path.join(schema_dir, f"schema_{base_filename}.json")
+                    #     with open(schema_file_path, "w", encoding="utf-8") as f:
+                    #         f.write(schema_formatted_string)
+                    #     logger.info(f"Schema inferito per {base_filename} salvato in: {schema_file_path}")
+                    # except Exception as schema_error:
+                    #     logger.error(f"Impossibile salvare lo schema per il file {file_path}: {schema_error}")
+
+                        df_normalizzato = self.schema_manager.normalize_dataframe_to_schema(df, master_schema)
+                        df_normalizzato = df_normalizzato.withColumn("source_file", F.lit(os.path.basename(file_path))) \
+                                                        .withColumn("source_id", F.lit(idx + 1))
+                        df_normalizzato.write.mode("append").parquet(temp_parquet_dir)
+                        dataframes_normalizzati.append(df_normalizzato)
+                        logger.info(f"File {file_path} salvato correttamente in formato Parquet.")
 
                     progress = int((idx+1)/len(file_paths) * 100)
                     progress_bar.progress(progress, text=f"Readed {idx+1} of {len(file_paths)} files")
@@ -697,7 +684,7 @@ class DataLoader:
                     logger.error(f"Errore critico durante il processo del file {file_path}: {e}", exc_info=True)
                     continue
                     
-            if not dataframes_normalizzati:
+            if current_format == 'json' and not dataframes_normalizzati:
                 logger.error("Nessun file è stato caricato e normalizzato con successo.")
                 return None
             
@@ -705,9 +692,14 @@ class DataLoader:
         with st.spinner(f"Merging {len(file_paths)} files..."):
             logger.info(f"Unione di {len(dataframes_normalizzati)} DataFrame normalizzati...")
 
-            combined_df = reduce(lambda df1, df2: df1.union(df2), dataframes_normalizzati)
+            if current_format == 'json':
+                combined_df = reduce(lambda df1, df2: df1.union(df2), dataframes_normalizzati)
             try:
-                #combined_df = spark.read.parquet(temp_parquet_dir)
+                if current_format == 'json':
+                    combined_df = spark.read.parquet(temp_parquet_dir)
+                elif current_format == 'parquet':
+                    combined_df = spark.read.option("mergeSchema", "true").parquet(temp_parquet_dir)
+
                 total_records = combined_df.count()
                 combined_df.show()
 
@@ -723,11 +715,9 @@ class DataLoader:
 
             except Exception as e:
                 logger.error(f"Errore durante la finalizzazione del DataFrame (conteggio o persist): {e}", exc_info=True)
-                # In caso di errore, rilascia la cache se è stata creata
                 if 'combined_df' in locals():
                     combined_df.unpersist()
-                return None
-        
+                return None        
     
     def _get_schema_for_type(self, schema_type: str, file_path: str = None) -> Optional[StructType]:
         """
@@ -1071,34 +1061,24 @@ class FileHandler:
     @staticmethod
     def handle_uploaded_file(uploaded_file) -> Optional[str]:
         """
-        Gestisce un file uploadato e lo salva temporaneamente
-        Args:
-            uploaded_file: File uploadato da Streamlit
-        Returns:
-            str: Percorso del file salvato o None se errore
+        Gestisce un file compresso uploadato e lo salva temporaneamente
         """
         try:
-            # Crea directory temporanea se non esiste
             temp_dir = Config.TEMP_DIR
             os.makedirs(temp_dir, exist_ok=True)
-            
-            # Percorso del file temporaneo
             temp_path = os.path.join(temp_dir, uploaded_file.name)
             
-            # Gestisci file compressi
             if uploaded_file.name.endswith('.gz'):
                 # Decomprimi file gz
                 with gzip.open(uploaded_file, 'rt') as gz_file:
                     content = gz_file.read()
                 
-                # Salva il contenuto decompresso
-                decompressed_path = temp_path[:-3]  # Rimuovi .gz
+                decompressed_path = temp_path[:-3]  # Estrazione .gz
                 with open(decompressed_path, 'w', encoding='utf-8') as f:
                     f.write(content)
                 
                 return decompressed_path
             else:
-                # Salva file normale
                 with open(temp_path, 'wb') as f:
                     f.write(uploaded_file.getbuffer())
                 

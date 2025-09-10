@@ -1,7 +1,6 @@
 """
 Pagina Streamlit per l'analisi visiva automatica e intelligente dei dati.
-Questo modulo tenta di generare grafici in autonomia e fornisce un'interfaccia
-manuale come opzione secondaria.
+Include supporto completo per grafici e algoritmi ML predefiniti dai metadati JSON.
 """
 
 import streamlit as st
@@ -10,7 +9,37 @@ import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 from typing import Dict, Any, Tuple, Optional, List
+import warnings
+import re
+
+# Import specifici per ML
 from utils.utils import get_twitter_query_templates
+from sklearn.cluster import KMeans, DBSCAN
+from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier, IsolationForest
+from sklearn.linear_model import LinearRegression, LogisticRegression
+from sklearn.svm import SVR, SVC
+from sklearn.decomposition import PCA
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score, mean_squared_error, silhouette_score
+import xgboost as xgb
+from statsmodels.tsa.seasonal import STL
+
+# Gestione dipendenza opzionale (Prophet)
+try:
+    from prophet import Prophet
+    PROPHET_AVAILABLE = True
+except ImportError:
+    PROPHET_AVAILABLE = False
+
+# Gestione dipendenza opzionale (SciPy)
+try:
+    from scipy.signal import find_peaks
+    SCIPY_AVAILABLE = True
+except ImportError:
+    SCIPY_AVAILABLE = False
+
+warnings.filterwarnings('ignore')
 
 ### 1. CLASSE DI ANALISI PRINCIPALE
 # ==============================================================================
@@ -50,401 +79,22 @@ class GeneralAnalytics:
             st.error(f"Errore durante l'aggregazione dei dati: {e}")
             return None
 
-### 2. FUNZIONI PER L'ANALISI AUTOMATICA
+### 2. CLASSE PER LA VISUALIZZAZIONE DEI GRAFICI
 # ==============================================================================
-
-def find_best_columns_for_analysis(df: pd.DataFrame) -> Tuple[Optional[str], Optional[str], str]:
-    """
-    Analizza il DataFrame per trovare le migliori colonne per un'analisi automatica.
-    Questa versione è più robusta e ignora le colonne con dati non "hashable".
-    """
-    categorical_cols = df.select_dtypes(include=['object', 'category']).columns
-    numerical_cols = df.select_dtypes(include=np.number).columns
-    best_group_by = None
-    
-    suitable_candidates = {}
-
-    if not categorical_cols.empty:
-        for col in categorical_cols:
-            try:
-                # Tenta di calcolare il numero di valori unici.
-                # Questo fallirà con un TypeError se la colonna contiene dizionari/liste.
-                n_unique = df[col].nunique()
-                
-                # Considera la colonna adatta solo se ha un numero di categorie "ragionevole"
-                if 3 < n_unique < 50:
-                    suitable_candidates[col] = n_unique
-            except TypeError:
-                # Se la colonna non è "hashable", la ignora e continua
-                st.sidebar.warning(f"ℹ️ Colonna '{col}' ignorata per l'analisi automatica perché contiene dati complessi (es. liste o dizionari).")
-                continue
-
-    # Se abbiamo trovato candidati adatti, scegliamo quello con meno categorie
-    if suitable_candidates:
-        best_group_by = min(suitable_candidates, key=suitable_candidates.get)
-
-    if not best_group_by:
-        return None, None, 'count'
-
-    # Trova la migliore colonna da aggregare
-    if not numerical_cols.empty:
-        possible_agg_cols = [col for col in numerical_cols if col != best_group_by]
-        if possible_agg_cols:
-            return best_group_by, possible_agg_cols[0], 'sum'
-
-    return best_group_by, 'count', 'count'
-
-
-def run_automatic_analysis(general_analytics: GeneralAnalytics, dataset: pd.DataFrame) -> Optional[Dict[str, Any]]:
-    """
-    Tenta di eseguire un'analisi completamente automatica.
-    Restituisce un dizionario con i risultati se ha successo, altrimenti None.
-    """
-    st.write("🧠 Analisi automatica del dataset in corso per trovare insights...")
-    group_by_col, agg_col, agg_type = find_best_columns_for_analysis(dataset)
-    
-    if not group_by_col:
-        st.warning("Non è stato possibile identificare una combinazione di colonne ideale per un'analisi automatica.")
-        return None
-        
-    st.info(f"Trovata combinazione promettente: Aggregazione di **{agg_col}** per **{group_by_col}**.")
-    
-    result_df = general_analytics.perform_aggregation(group_by_col, agg_col, agg_type, sort_desc=True)
-    
-    if result_df is None or result_df.empty:
-        return None
-    
-    result_df = result_df.head(20) # Limita i risultati per grafici più puliti
-    chart_suggestions = suggest_charts(result_df)
-    
-    return {
-        "result_df": result_df,
-        "chart_suggestions": chart_suggestions,
-        "params": (group_by_col, agg_col, agg_type)
-    }
-
-### 3. FUNZIONI PER LA GENERAZIONE DI GRAFICI E INSIGHTS
-# ==============================================================================
-
-def suggest_charts(df: pd.DataFrame) -> Dict[str, Dict[str, Any]]:
-    """
-    Analizza un DataFrame aggregato e suggerisce i tipi di grafico più appropriati.
-    """
-    suggestions = {}
-    if df is None or df.empty or len(df.columns) < 2:
-        return suggestions
-
-    cat_col = df.columns[0]
-    num_col = df.columns[1]
-    unique_categories = df[cat_col].nunique()
-
-    # Suggerimento #1: Grafico a barre orizzontali (quasi sempre utile)
-    suggestions['horizontal_bar'] = {
-        'type': 'horizontal_bar',
-        'title': f'Classifica per {cat_col}',
-        'description': f'Confronto dei valori di "{num_col}" tra le diverse categorie.',
-        'priority': 1, 'config': {'x_col': cat_col, 'y_col': num_col}
-    }
-
-    # Suggerimento #2: Grafico a torta (se ci sono poche categorie)
-    if unique_categories <= 10 and df[num_col].min() >= 0:
-        suggestions['pie_chart'] = {
-            'type': 'pie', 'title': f'Distribuzione per {cat_col}',
-            'description': f'Ripartizione percentuale di "{num_col}".',
-            'priority': 2, 'config': {'labels_col': cat_col, 'values_col': num_col}
-        }
-
-    # Suggerimento #3: Treemap (se ci sono molte categorie)
-    if unique_categories > 10:
-        suggestions['treemap'] = {
-            'type': 'treemap', 'title': f'Mappa Gerarchica per {cat_col}',
-            'description': 'Visualizzazione gerarchica per un gran numero di categorie.',
-            'priority': 3, 'config': {'labels_col': cat_col, 'values_col': num_col}
-        }
-        
-    return dict(sorted(suggestions.items(), key=lambda item: item[1]['priority']))
-
-
-def _get_chart_icon(chart_type: str) -> str:
-    """Restituisce un'icona emoji per un dato tipo di grafico."""
-    icons = {'horizontal_bar': '📊', 'pie': '🥧', 'treemap': '🗂️'}
-    return icons.get(chart_type, '📈')
-
-
-def _create_and_display_chart(df: pd.DataFrame, config: Dict[str, Any]):
-    """Crea e visualizza un singolo grafico Plotly basato sulla configurazione."""
-    try:
-        st.markdown(f"**{config['title']}**: {config['description']}")
-        chart_type = config['type']
-        chart_config = config['config']
-        fig = None
-
-        if chart_type == 'horizontal_bar':
-            fig = px.bar(df, x=chart_config['y_col'], y=chart_config['x_col'], orientation='h',
-                         title=config['title'], color=chart_config['y_col'],
-                         color_continuous_scale='viridis')
-            fig.update_layout(yaxis={'categoryorder': 'total ascending'})
-        
-        elif chart_type == 'pie':
-            fig = px.pie(df, names=chart_config['labels_col'], values=chart_config['values_col'],
-                         title=config['title'])
-            fig.update_traces(textposition='inside', textinfo='percent+label')
-
-        elif chart_type == 'treemap':
-            fig = px.treemap(df, path=[chart_config['labels_col']], values=chart_config['values_col'],
-                             title=config['title'], color=chart_config['values_col'],
-                             color_continuous_scale='RdYlGn')
-
-        if fig:
-            fig.update_layout(height=500, template='plotly_white')
-            st.plotly_chart(fig, width='stretch')
-            
-    except Exception as e:
-        st.error(f"❌ Errore nella creazione del grafico '{config.get('title', 'N/A')}': {e}")
-
-
-def display_charts(df: pd.DataFrame, suggestions: Dict[str, Dict[str, Any]]):
-    """Mostra i grafici suggeriti in un layout a tab."""
-    if not suggestions:
-        st.info("Nessuna visualizzazione specifica è stata suggerita per questi dati.")
-        return
-
-    tab_names = [f"{_get_chart_icon(cfg['type'])} {cfg['type'].replace('_', ' ').title()}" for cfg in suggestions.values()]
-    tabs = st.tabs(tab_names)
-    
-    for tab, config in zip(tabs, suggestions.values()):
-        with tab:
-            _create_and_display_chart(df, config)
-
-
-def display_automatic_insights(result: pd.DataFrame, group_by_col: str, agg_col: str, agg_type: str):
-    """Mostra insights testuali generati automaticamente dai dati aggregati."""
-    st.markdown("### 🔍 Insights Automatici")
-    if result is None or result.empty or len(result.columns) < 2:
-        st.info("Non ci sono dati sufficienti per generare insights.")
-        return
-    
-    value_col = result.columns[1]
-    category_col = result.columns[0]
-    
-    top_entry = result.iloc[0]
-    total_value = result[value_col].sum()
-    
-    st.info(f"""
-    - **Elemento Principale**: La categoria **{top_entry[category_col]}** ha il valore più alto, con **{top_entry[value_col]:,.0f}**.
-    - **Concentrazione**: I primi 3 elementi rappresentano il **{(result.head(3)[value_col].sum() / total_value * 100 if total_value > 0 else 0):.1f}%** del totale.
-    - **Distribuzione**: Sono presenti **{len(result)}** categorie uniche in questa analisi.
-    """)
-
-def is_hashable(series):
-    try:
-        series.nunique()
-        return True
-    except TypeError:
-        return False
-
-### 4. FUNZIONI PER L'INTERFACCIA UTENTE E L'ORCHESTRAZIONE
-# ==============================================================================
-
-def show_manual_aggregation_ui(dataset: pd.DataFrame) -> Dict[str, Any]:
-    """
-    Mostra i widget per la configurazione manuale e restituisce i parametri scelti.
-    """
-    st.markdown("### ⚙️ Configura la Tua Analisi")
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        group_by_col = st.selectbox("🏷️ Raggruppa per:", 
-                            [col for col in dataset.columns if is_hashable(dataset[col]) and dataset[col].nunique() < 100],
-                            help="Seleziona una colonna con un numero ragionevole di categorie.")
-    with col2:
-        numeric_cols = list(dataset.select_dtypes(include=np.number).columns)
-        agg_col = st.selectbox("🔢 Aggrega colonna:", numeric_cols + ["count"], index=len(numeric_cols))
-    with col3:
-        agg_types = ['count'] if agg_col == 'count' else ['sum', 'mean', 'max', 'min']
-        agg_type = st.selectbox("📊 Tipo aggregazione:", agg_types)
-
-    result_limit = st.slider("📏 Limita risultati a:", 5, 100, 20)
-    sort_desc = st.toggle("⬇️ Ordina decrescente", value=True)
-    
-    execute_manual = st.button("🚀 Genera Analisi Personalizzata", type="primary", width='stretch')
-    
-    return {
-        "execute": execute_manual,
-        "params": (group_by_col, agg_col, agg_type),
-        "options": (result_limit, sort_desc)
-    }
-
-
-def execute_smart_aggregation(general_analytics: GeneralAnalytics, group_by_col: str, agg_col: str, agg_type: str, 
-                              result_limit: Optional[int], sort_desc: bool):
-    """
-    Esegue l'aggregazione richiesta dall'utente e mostra l'output completo.
-    """
-    with st.spinner("🔄 Elaborazione analisi personalizzata in corso..."):
-        result = general_analytics.perform_aggregation(group_by_col, agg_col, agg_type, sort_desc=sort_desc)
-        
-        if result is not None and not result.empty:
-            if result_limit:
-                result = result.head(result_limit)
-            
-            st.markdown("---")
-            st.markdown("## 📊 Risultati Analisi Personalizzata")
-            st.dataframe(result, width='stretch')
-            
-            st.markdown("## 🎨 Visualizzazioni Suggerite")
-            chart_suggestions = suggest_charts(result)
-            display_charts(result, chart_suggestions)
-            display_automatic_insights(result, group_by_col, agg_col, agg_type)
-        else:
-            st.error("❌ Nessun risultato trovato per l'aggregazione specificata.")
-
-### 5. FUNZIONE PRINCIPALE DELLA PAGINA
-# ==============================================================================
-
-def show_analytics_page():
-    """
-    Funzione principale per visualizzare analisi e grafici, integrata con il sistema di metadati JSON
-    """
-    dataset = st.session_state.get('last_query_result')
-    if dataset is None:
-        st.warning("Esegui una query SQL per caricare un dataset prima di accedere alle analisi.")
-        return
-
-    if not isinstance(dataset, pd.DataFrame):
-        try:
-            dataset = dataset.toPandas()
-        except Exception as e:
-            st.error(f"Errore nella conversione del dataset in formato pandas: {e}")
-            return
-    
-    if dataset.empty:
-        st.warning("Il dataset è vuoto, nessuna analisi possibile.")
-        return
-    
-    # Controlla se ci sono grafici predefiniti dalla query corrente
-    query_text = st.session_state.get('last_query_text', '')
-    predefined_charts = find_charts_for_query(query_text)
-    
-    # SEZIONE 1: GRAFICI PREDEFINITI (se disponibili)
-    if predefined_charts:
-        st.markdown("### 🎯 Grafici Predefiniti")
-        st.success(f"Trovati {len(predefined_charts)} grafici configurati per questa query")
-        
-        visualizer = ChartVisualizer()
-        visualizer.display_charts_from_config(dataset, predefined_charts)
-        
-        st.markdown("---")
-        
-        # Opzione per nascondere l'analisi automatica se ci sono grafici predefiniti
-        show_auto_analysis = st.checkbox(
-            "Mostra anche analisi automatica", 
-            value=False,
-            help="Visualizza analisi automatica aggiuntiva oltre ai grafici predefiniti"
-        )
-        
-        if not show_auto_analysis:
-            return
-    
-    # SEZIONE 2: ANALISI AUTOMATICA
-    st.markdown("### 🤖 Analisi Automatica")
-    
-    general_analytics = GeneralAnalytics(dataset)
-    
-    # Tenta l'analisi automatica
-    with st.spinner("Eseguo l'analisi automatica del dataset..."):
-        automatic_result = run_automatic_analysis(general_analytics, dataset)
-
-    # Se l'analisi automatica ha successo, mostra i risultati
-    if automatic_result:
-        st.success("Analisi automatica completata!")
-        display_charts(automatic_result["result_df"], automatic_result["chart_suggestions"])
-        
-        with st.expander("📄 Visualizza i dati e gli insights automatici"):
-            st.dataframe(automatic_result["result_df"], use_container_width=True)
-            display_automatic_insights(automatic_result["result_df"], *automatic_result["params"])
-
-    # SEZIONE 3: ANALISI MANUALE (sempre disponibile)
-    st.markdown("---")
-    with st.expander("🔧 Crea un'analisi personalizzata", expanded=(not automatic_result and not predefined_charts)):
-        manual_config = show_manual_aggregation_ui(dataset)
-        
-        if manual_config["execute"]:
-            (group_by_col, agg_col, agg_type) = manual_config["params"]
-            (result_limit, sort_desc) = manual_config["options"]
-            
-            execute_smart_aggregation(
-                general_analytics, group_by_col, agg_col, agg_type, result_limit, sort_desc
-            )
-
-
-# FUNZIONI DI SUPPORTO NECESSARIE
-
-def find_charts_for_query(query_text: str) -> List[Dict[str, Any]]:
-    """
-    Trova i grafici predefiniti per una query specifica confrontando con i template salvati
-    """
-    if not query_text.strip():
-        return []
-    
-    query_normalized = normalize_query_for_comparison(query_text)
-    
-    try:
-        # Carica i template dal JSON
-        all_templates = get_twitter_query_templates()
-        
-        for category, queries in all_templates.items():
-            for name, query_data in queries.items():
-                if isinstance(query_data, dict) and 'query' in query_data:
-                    template_query = query_data.get('query', '')
-                    template_normalized = normalize_query_for_comparison(template_query)
-                    
-                    # Confronta query normalizzate
-                    if query_normalized == template_normalized:
-                        charts = query_data.get('charts', [])
-                        if charts:
-                            st.info(f"Grafici caricati dal template: {name} ({category})")
-                        return charts
-        
-    except Exception as e:
-        st.error(f"Errore nel caricamento dei grafici predefiniti: {e}")
-    
-    return []
-
-
-def normalize_query_for_comparison(query: str) -> str:
-    """
-    Normalizza una query per il confronto rimuovendo differenze non significative
-    """
-    import re
-    
-    if not query:
-        return ""
-    
-    # Rimuovi commenti SQL
-    query = re.sub(r'--.*?$', '', query, flags=re.MULTILINE)
-    
-    # Rimuovi spazi extra, newline e tab
-    query = re.sub(r'\s+', ' ', query.strip())
-    
-    # Converti in minuscolo per confronto case-insensitive
-    return query.lower()
-
 
 class ChartVisualizer:
     """
-    Classe per gestire la visualizzazione automatica dei grafici basata sui metadati JSON
+    Classe per gestire la visualizzazione automatica dei grafici basata sui metadati JSON.
     """
-    
     def __init__(self):
         self.color_palettes = {
             'default': px.colors.qualitative.Set3,
             'viridis': px.colors.sequential.Viridis,
             'plasma': px.colors.sequential.Plasma,
         }
-    
+
     def validate_chart_config(self, chart_config: Dict[str, Any], df_columns: List[str]) -> Tuple[bool, str]:
-        """Valida la configurazione del grafico"""
+        """Valida la configurazione del grafico."""
         if not isinstance(chart_config, dict):
             return False, "Configurazione non valida"
         
@@ -452,10 +102,10 @@ class ChartVisualizer:
         x_col = chart_config.get('x')
         y_col = chart_config.get('y')
         
-        if chart_type in ['barre', 'linee', 'heatmap']:
+        if chart_type in ['barre', 'linee', 'heatmap', 'serie temporale con picchi']:
             if not x_col or x_col not in df_columns:
                 return False, f"Colonna X '{x_col}' non trovata nel dataset"
-            if chart_type in ['linee', 'heatmap'] and (not y_col or y_col not in df_columns):
+            if chart_type in ['linee', 'heatmap', 'serie temporale con picchi'] and (not y_col or y_col not in df_columns):
                 return False, f"Colonna Y '{y_col}' richiesta per {chart_type}"
         
         elif chart_type == 'torta':
@@ -464,12 +114,42 @@ class ChartVisualizer:
         
         return True, ""
     
+    def _detect_peaks(self, df: pd.DataFrame, x_col: str, y_col: str, prominence_factor: float = 0.1) -> Tuple[List[int], float]:
+        """Rileva picchi in una serie temporale."""
+        if not SCIPY_AVAILABLE:
+            st.warning("Libreria 'scipy' non trovata. Rilevamento picchi limitato.")
+            df_sorted = df.sort_values(x_col).dropna(subset=[x_col, y_col])
+            y_values = df_sorted[y_col].values
+            
+            peaks = []
+            threshold = np.mean(y_values) + np.std(y_values)
+            
+            for i in range(1, len(y_values) - 1):
+                if (y_values[i] > y_values[i-1] and 
+                    y_values[i] > y_values[i+1] and 
+                    y_values[i] > threshold):
+                    peaks.append(i)
+            return peaks, threshold
+
+        try:
+            df_sorted = df.sort_values(x_col).dropna(subset=[x_col, y_col])
+            y_values = df_sorted[y_col].values
+            
+            prominence_threshold = prominence_factor * np.std(y_values)
+            
+            peaks, properties = find_peaks(y_values, prominence=prominence_threshold)
+            
+            return peaks.tolist(), prominence_threshold
+            
+        except Exception as e:
+            st.error(f"Errore nel rilevamento picchi: {e}")
+            return [], 0.0
+
     def create_chart(self, df: pd.DataFrame, chart_config: Dict[str, Any]) -> Optional[go.Figure]:
-        """Crea un grafico basato sulla configurazione"""
+        """Crea un grafico basato sulla configurazione."""
         if df.empty:
             return None
         
-        # Valida configurazione
         is_valid, error_msg = self.validate_chart_config(chart_config, df.columns.tolist())
         if not is_valid:
             st.error(f"Errore configurazione grafico: {error_msg}")
@@ -484,13 +164,11 @@ class ChartVisualizer:
             
             if chart_type == 'barre':
                 if not y_col or y_col == '':
-                    # Conta occorrenze
                     counts = df[x_col].value_counts().head(20)
                     fig = px.bar(x=counts.values, y=counts.index, orientation='h',
                                title=f"Distribuzione di {x_col}")
                     fig.update_layout(yaxis={'categoryorder': 'total ascending'})
                 else:
-                    # Aggrega per Y
                     if df[x_col].dtype == 'object' and df[y_col].dtype in ['int64', 'float64']:
                         agg_df = df.groupby(x_col)[y_col].sum().reset_index()
                         agg_df = agg_df.sort_values(y_col, ascending=False).head(20)
@@ -499,9 +177,49 @@ class ChartVisualizer:
                         fig = px.bar(df.head(20), x=x_col, y=y_col, title=f"{y_col} per {x_col}")
             
             elif chart_type == 'linee':
-                df_sorted = df.sort_values(x_col) if df[x_col].dtype in ['int64', 'float64', 'datetime64[ns]'] else df
-                fig = px.line(df_sorted.head(500), x=x_col, y=y_col, 
-                            title=f"Trend di {y_col} rispetto a {x_col}", markers=True)
+                is_temporal = pd.api.types.is_datetime64_any_dtype(df[x_col])
+
+                if is_temporal:
+                    st.info("Rilevata serie temporale, dati aggregati per giorno.")
+                    
+                    if pd.api.types.is_numeric_dtype(df[y_col]):
+                        agg_df = df.groupby(df[x_col].dt.date)[y_col].sum().reset_index()
+                    else:
+                        agg_df = df.groupby(df[x_col].dt.date).size().reset_index(name=y_col)
+                        
+                    df_to_plot = agg_df.sort_values(x_col)
+                    title = f"Trend GIORNALIERO di {y_col} rispetto a {x_col}"
+                
+                else:
+                    df_to_plot = df.sort_values(x_col).head(500)
+                    title = f"Trend di {y_col} rispetto a {x_col}"
+
+                fig = px.line(df_to_plot, x=x_col, y=y_col, title=title, markers=True)
+            
+            elif chart_type == 'serie temporale con picchi':
+                df_sorted = df.sort_values(x_col).dropna(subset=[x_col, y_col])
+                
+                if len(df_sorted) > 1000:
+                    df_sorted = df_sorted.tail(1000)
+                
+                fig = px.line(df_sorted, x=x_col, y=y_col, title=f"Serie Temporale con Picchi - {y_col} vs {x_col}")
+                
+                peaks_idx, threshold = self._detect_peaks(df_sorted, x_col, y_col)
+                
+                if len(peaks_idx) > 0:
+                    peak_x_values = df_sorted[x_col].iloc[peaks_idx]
+                    peak_y_values = df_sorted[y_col].iloc[peaks_idx]
+                    
+                    fig.add_trace(go.Scatter(
+                        x=peak_x_values, y=peak_y_values, mode='markers', name=f'Picchi (n={len(peaks_idx)})',
+                        marker=dict(color='red', size=10, symbol='triangle-up', line=dict(width=2, color='darkred')),
+                        hovertemplate=f'<b>Picco</b><br>{x_col}: %{{x}}<br>{y_col}: %{{y}}<extra></extra>'
+                    ))
+                    
+                    if isinstance(threshold, (int, float)):
+                        fig.add_hline(y=threshold, line_dash="dash", annotation_text=f"Soglia picchi: {threshold:.2f}", line_color="orange")
+                
+                fig.update_layout(showlegend=True, hovermode='x unified')
             
             elif chart_type == 'torta':
                 if not y_col or y_col == '':
@@ -523,8 +241,7 @@ class ChartVisualizer:
                     fig = px.imshow(crosstab, title=f"Heatmap: {y_col} vs {x_col}")
             
             if fig:
-                fig.update_layout(height=500, template='plotly_white', 
-                                margin=dict(t=60, b=60, l=60, r=60))
+                fig.update_layout(height=500, template='plotly_white', margin=dict(t=60, b=60, l=60, r=60))
             
             return fig
             
@@ -533,13 +250,12 @@ class ChartVisualizer:
             return None
     
     def display_charts_from_config(self, df: pd.DataFrame, charts_config: List[Dict[str, Any]]):
-        """Visualizza tutti i grafici dalla configurazione JSON"""
+        """Visualizza tutti i grafici dalla configurazione JSON."""
         if not charts_config:
             st.info("Nessun grafico configurato per questa query")
             return
         
         if len(charts_config) == 1:
-            # Un solo grafico
             chart_config = charts_config[0]
             chart_type = chart_config.get('type', 'Grafico')
             st.markdown(f"**{chart_type.title()}**")
@@ -547,11 +263,11 @@ class ChartVisualizer:
             if fig:
                 st.plotly_chart(fig, use_container_width=True)
         else:
-            # Multipli grafici con tab
             tab_names = []
             for i, config in enumerate(charts_config):
                 chart_type = config.get('type', f'Grafico {i+1}')
-                icon = {'barre': '📊', 'linee': '📈', 'torta': '🥧', 'heatmap': '🔥'}.get(chart_type.lower(), '📈')
+                icon_map = {'barre': '📊', 'linee': '📈', 'torta': '🥧', 'heatmap': '🔥', 'serie temporale con picchi': '⚡'}
+                icon = icon_map.get(chart_type.lower(), '📈')
                 tab_names.append(f"{icon} {chart_type.title()}")
             
             tabs = st.tabs(tab_names)
@@ -561,6 +277,547 @@ class ChartVisualizer:
                     fig = self.create_chart(df, chart_config)
                     if fig:
                         st.plotly_chart(fig, use_container_width=True)
-                        
                         with st.expander("ℹ️ Info Grafico"):
                             st.json(chart_config)
+
+### 3. CLASSE PER MACHINE LEARNING
+# ==============================================================================
+
+class MLProcessor:
+    """
+    Classe per gestire l'esecuzione di algoritmi ML predefiniti dai metadati JSON.
+    """
+    def __init__(self, dataframe: pd.DataFrame):
+        self.df = dataframe
+        self.scaler = StandardScaler()
+        
+    def validate_ml_config(self, ml_config: Dict[str, Any]) -> Tuple[bool, str]:
+        """Valida la configurazione ML."""
+        if not isinstance(ml_config, dict):
+            return False, "Configurazione ML non valida"
+        
+        algorithm = ml_config.get('algorithm')
+        features = ml_config.get('features', [])
+        target = ml_config.get('target')
+        
+        if not algorithm:
+            return False, "Algoritmo non specificato"
+        
+        if algorithm in ['STL Decomposition', 'Prophet']:
+            datetime_cols = self._find_datetime_columns()
+            if not datetime_cols and not features:
+                return False, f"{algorithm} richiede almeno una colonna datetime"
+        elif not features:
+            return False, "Features non specificate"
+        
+        if features:
+            missing_features = [f for f in features if f not in self.df.columns]
+            if missing_features:
+                return False, f"Features mancanti: {missing_features}"
+        
+        supervised_algorithms = ['Random Forest', 'XGBoost', 'Linear Regression', 'Logistic Regression', 'SVM']
+        if algorithm in supervised_algorithms:
+            if not target or target not in self.df.columns:
+                return False, f"Target '{target}' richiesto per {algorithm}"
+        
+        return True, ""
+    
+    def _find_datetime_columns(self) -> List[str]:
+        """Trova colonne datetime nel DataFrame."""
+        datetime_cols = []
+        for col in self.df.columns:
+            if pd.api.types.is_datetime64_any_dtype(self.df[col]):
+                datetime_cols.append(col)
+            elif self.df[col].dtype == 'object':
+                try:
+                    pd.to_datetime(self.df[col].iloc[:100], errors='raise')
+                    datetime_cols.append(col)
+                except (ValueError, TypeError):
+                    pass
+        return datetime_cols
+    
+    def _prepare_time_series_data(self, features: List[str] = None) -> Tuple[pd.DataFrame, str, str]:
+        """Prepara dati per analisi serie temporali."""
+        datetime_cols = self._find_datetime_columns()
+        if not datetime_cols:
+            raise ValueError("Nessuna colonna datetime trovata per l'analisi temporale")
+        
+        date_col = datetime_cols[0]
+        df_ts = self.df.copy()
+        df_ts[date_col] = pd.to_datetime(df_ts[date_col])
+        
+        if features:
+            value_col = features[0]
+        else:
+            numeric_cols = [col for col in df_ts.select_dtypes(include=np.number).columns if col != date_col]
+            if not numeric_cols:
+                raise ValueError("Nessuna colonna numerica trovata per l'analisi temporale")
+            value_col = numeric_cols[0]
+        
+        df_ts = df_ts.sort_values(date_col).dropna(subset=[date_col, value_col])
+        return df_ts, date_col, value_col
+    
+    def _run_isolation_forest(self, features: List[str], params: Dict = None) -> Dict[str, Any]:
+        """Esegue Isolation Forest per anomaly detection."""
+        if not features:
+            features = list(self.df.select_dtypes(include=[np.number]).columns)
+        if not features:
+            return {'error': "Nessuna feature numerica trovata per Isolation Forest"}
+        
+        df_clean = self.df[features].dropna()
+        if df_clean.empty:
+            return {'error': "Nessun dato valido dopo la pulizia"}
+        
+        X_scaled = self.scaler.fit_transform(df_clean)
+        contamination = params.get('contamination', 0.1) if params else 0.1
+        
+        iso_forest = IsolationForest(contamination=contamination, random_state=42)
+        anomaly_labels = iso_forest.fit_predict(X_scaled)
+        
+        is_anomaly = anomaly_labels == -1
+        return {
+            'algorithm': 'Isolation Forest', 'is_anomaly': is_anomaly, 'n_anomalies': sum(is_anomaly),
+            'features': features, 'data_clean': df_clean, 'model': iso_forest
+        }
+    
+    def _run_stl_decomposition(self, features: List[str] = None, params: Dict = None) -> Dict[str, Any]:
+        """Esegue STL Decomposition per rilevare anomalie temporali."""
+        df_ts, date_col, value_col = self._prepare_time_series_data(features)
+        period = params.get('period', 7) if params else 7
+        df_ts = df_ts.set_index(date_col)
+        
+        if len(df_ts) < period * 2:
+            period = max(2, len(df_ts) // 3)
+        
+        stl = STL(df_ts[value_col], period=period)
+        decomposition = stl.fit()
+        
+        residuals = decomposition.resid
+        threshold = params.get('threshold', 3) if params else 3
+        is_anomaly = np.abs(residuals) > threshold * residuals.std()
+        
+        return {
+            'algorithm': 'STL Decomposition', 'decomposition': decomposition, 'is_anomaly': is_anomaly,
+            'n_anomalies': sum(is_anomaly), 'date_col': date_col, 'value_col': value_col, 'data': df_ts
+        }
+    
+    def _run_prophet_anomaly(self, features: List[str] = None, params: Dict = None) -> Dict[str, Any]:
+        """Esegue Prophet per anomaly detection su serie temporali."""
+        if not PROPHET_AVAILABLE:
+            return {'error': "Prophet non è installato. Eseguire: pip install prophet"}
+        
+        df_ts, date_col, value_col = self._prepare_time_series_data(features)
+        prophet_df = pd.DataFrame({'ds': df_ts[date_col], 'y': df_ts[value_col]}).dropna()
+        
+        if len(prophet_df) < 10:
+            return {'error': "Dati insufficienti per Prophet (minimo 10 punti)"}
+        
+        model = Prophet(interval_width=params.get('interval_width', 0.95) if params else 0.95)
+        with st.spinner("Addestramento modello Prophet..."):
+            model.fit(prophet_df)
+        
+        forecast = model.predict(prophet_df)
+        is_anomaly = (prophet_df['y'] < forecast['yhat_lower']) | (prophet_df['y'] > forecast['yhat_upper'])
+        
+        return {
+            'algorithm': 'Prophet', 'model': model, 'forecast': forecast, 'original_data': prophet_df,
+            'is_anomaly': is_anomaly, 'n_anomalies': sum(is_anomaly)
+        }
+
+    def run_anomaly_detection(self, algorithm: str, features: List[str] = None, params: Dict = None) -> Dict[str, Any]:
+        """Esegue algoritmi di anomaly detection."""
+        try:
+            if algorithm == "Isolation Forest":
+                return self._run_isolation_forest(features, params)
+            elif algorithm == "STL Decomposition":
+                return self._run_stl_decomposition(features, params)
+            elif algorithm == "Prophet":
+                return self._run_prophet_anomaly(features, params)
+            else:
+                return {'error': f"Algoritmo di anomaly detection {algorithm} non supportato"}
+        except Exception as e:
+            return {'error': f"Errore in {algorithm}: {str(e)}"}
+
+    def prepare_data(self, features: List[str], target: Optional[str] = None) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+        """Prepara i dati per l'algoritmo ML."""
+        df_clean = self.df[features + ([target] if target else [])].dropna()
+        X = df_clean[features].select_dtypes(include=[np.number])
+        if X.empty:
+            raise ValueError("Nessuna feature numerica trovata")
+        
+        X_scaled = self.scaler.fit_transform(X)
+        y = df_clean[target] if target else None
+        if y is not None and y.dtype == 'object':
+            y = pd.Categorical(y).codes
+        return X_scaled, y
+    
+    def run_clustering(self, algorithm: str, X: np.ndarray, params: Dict = None) -> Dict[str, Any]:
+        """Esegue algoritmi di clustering."""
+        try:
+            if algorithm == "K-Means":
+                optimal_k = params.get('n_clusters', 3) if params else 3
+                model = KMeans(n_clusters=optimal_k, random_state=42, n_init=10)
+                labels = model.fit_predict(X)
+                return {
+                    'algorithm': 'K-Means', 'labels': labels, 'n_clusters': optimal_k,
+                    'silhouette_score': silhouette_score(X, labels) if len(set(labels)) > 1 else 0, 'model': model
+                }
+            elif algorithm == "DBSCAN":
+                model = DBSCAN(eps=params.get('eps', 0.5), min_samples=params.get('min_samples', 5))
+                labels = model.fit_predict(X)
+                n_clusters = len(set(labels)) - (1 if -1 in labels else 0)
+                return {
+                    'algorithm': 'DBSCAN', 'labels': labels, 'n_clusters': n_clusters, 'n_noise': list(labels).count(-1),
+                    'silhouette_score': silhouette_score(X, labels) if n_clusters > 1 else 0, 'model': model
+                }
+        except Exception as e:
+            return {'error': f"Errore in {algorithm}: {str(e)}"}
+        return {}
+
+    def run_supervised(self, algorithm: str, X: np.ndarray, y: np.ndarray) -> Dict[str, Any]:
+        """Esegue algoritmi supervisionati."""
+        try:
+            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+            is_classification = len(np.unique(y)) < 10
+            
+            model_map = {
+                "Random Forest": RandomForestClassifier if is_classification else RandomForestRegressor,
+                "XGBoost": xgb.XGBClassifier if is_classification else xgb.XGBRegressor,
+                "Linear Regression": LinearRegression,
+                "Logistic Regression": LogisticRegression,
+                "SVM": SVC if is_classification else SVR
+            }
+            model = model_map[algorithm](random_state=42) if "Regression" not in algorithm else model_map[algorithm]()
+            
+            model.fit(X_train, y_train)
+            y_pred = model.predict(X_test)
+            
+            metric_name = 'accuracy' if is_classification else 'mse'
+            score_func = accuracy_score if is_classification else mean_squared_error
+            score = score_func(y_test, y_pred)
+            
+            return {
+                'algorithm': algorithm, 'model': model, 'predictions': y_pred,
+                'test_actual': y_test, metric_name: score, 'is_classification': is_classification
+            }
+        except Exception as e:
+            return {'error': f"Errore in {algorithm}: {str(e)}"}
+        return {}
+    
+    def run_dimensionality_reduction(self, algorithm: str, X: np.ndarray, params: Dict = None) -> Dict[str, Any]:
+        """Esegue algoritmi di riduzione dimensionalità."""
+        try:
+            if algorithm == "PCA":
+                n_components = params.get('n_components', 2) if params else 2
+                n_components = min(n_components, X.shape[1], X.shape[0])
+                model = PCA(n_components=n_components)
+                X_transformed = model.fit_transform(X)
+                return {
+                    'algorithm': 'PCA', 'transformed_data': X_transformed,
+                    'explained_variance_ratio': model.explained_variance_ratio_,
+                    'total_explained_variance': sum(model.explained_variance_ratio_),
+                    'model': model, 'n_components': n_components
+                }
+        except Exception as e:
+            return {'error': f"Errore in {algorithm}: {str(e)}"}
+        return {}
+
+    def execute_ml_config(self, ml_config: Dict[str, Any]) -> Dict[str, Any]:
+        """Esegue una configurazione ML completa."""
+        is_valid, error_msg = self.validate_ml_config(ml_config)
+        if not is_valid:
+            return {'error': error_msg}
+        
+        algorithm = ml_config['algorithm']
+        features = ml_config.get('features', [])
+        target = ml_config.get('target')
+        params = ml_config.get('params', {})
+        
+        try:
+            alg_map = {
+                'K-Means': ('clustering', True), 'DBSCAN': ('clustering', True),
+                'Random Forest': ('supervised', True), 'XGBoost': ('supervised', True),
+                'Linear Regression': ('supervised', True), 'Logistic Regression': ('supervised', True),
+                'SVM': ('supervised', True), 'PCA': ('dimensionality', True),
+                'Isolation Forest': ('anomaly', False), 'STL Decomposition': ('anomaly', False),
+                'Prophet': ('anomaly', False)
+            }
+            
+            alg_type, needs_prepare = alg_map.get(algorithm, (None, False))
+
+            if alg_type == 'anomaly':
+                return self.run_anomaly_detection(algorithm, features, params)
+            
+            if needs_prepare:
+                X, y = self.prepare_data(features, target)
+                if alg_type == 'clustering':
+                    return self.run_clustering(algorithm, X, params)
+                if alg_type == 'supervised':
+                    return self.run_supervised(algorithm, X, y)
+                if alg_type == 'dimensionality':
+                    return self.run_dimensionality_reduction(algorithm, X, params)
+            
+            return {'error': f"Algoritmo {algorithm} non supportato"}
+
+        except Exception as e:
+            return {'error': f"Errore nell'esecuzione di {algorithm}: {str(e)}"}
+
+### 4. CLASSE PER VISUALIZZAZIONE ML
+# ==============================================================================
+
+class MLVisualizer:
+    """
+    Classe per visualizzare i risultati degli algoritmi ML.
+    """
+    def __init__(self, ml_processor: MLProcessor):
+        self.ml_processor = ml_processor
+
+    def visualize_clustering_results(self, results: Dict[str, Any], features: List[str]):
+        """Visualizza risultati di clustering."""
+        if 'error' in results:
+            st.error(results['error'])
+            return
+        
+        st.success(f"✅ {results['algorithm']} completato!")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("Numero di cluster", results.get('n_clusters', 'N/A'))
+            if 'silhouette_score' in results:
+                st.metric("Silhouette Score", f"{results['silhouette_score']:.3f}")
+        
+        # Se abbiamo 2+ features, mostra scatter plot
+        if len(features) >= 2:
+            df_clean = self.ml_processor.df[features].dropna()
+            X_vis = self.ml_processor.scaler.transform(df_clean.select_dtypes(include=[np.number]))
+            
+            if len(X_vis) == len(results['labels']):
+                df_plot = pd.DataFrame({'x': X_vis[:, 0], 'y': X_vis[:, 1], 'Cluster': results['labels']})
+                fig = px.scatter(df_plot, x='x', y='y', color='Cluster', color_continuous_scale='viridis',
+                               title=f"Visualizzazione Cluster - {results['algorithm']}", labels={'x': features[0], 'y': features[1]})
+                st.plotly_chart(fig, use_container_width=True)
+    
+    def visualize_supervised_results(self, results: Dict[str, Any]):
+        """Visualizza risultati di algoritmi supervisionati."""
+        if 'error' in results:
+            st.error(results['error'])
+            return
+        
+        st.success(f"✅ {results['algorithm']} completato!")
+        is_classification = results.get('is_classification', False)
+        metric_name = 'Accuracy' if is_classification else 'Mean Squared Error'
+        metric_val = results.get('accuracy') if is_classification else results.get('mse')
+        st.metric(metric_name, f"{metric_val:.3f}")
+
+        y_test, y_pred = results['test_actual'], results['predictions']
+        if is_classification:
+            conf_matrix = pd.crosstab(pd.Series(y_test, name='Actual'), pd.Series(y_pred, name='Predicted'))
+            fig = px.imshow(conf_matrix, title="Matrice di Confusione", text_auto=True)
+        else:
+            fig = px.scatter(x=y_test, y=y_pred, title="Predizioni vs Valori Reali", labels={'x': 'Valori Reali', 'y': 'Valori Predetti'})
+            fig.add_shape(type="line", x0=min(y_test), y0=min(y_test), x1=max(y_test), y1=max(y_test), line=dict(dash="dash"))
+        st.plotly_chart(fig, use_container_width=True)
+    
+    def visualize_pca_results(self, results: Dict[str, Any]):
+        """Visualizza risultati PCA."""
+        if 'error' in results:
+            st.error(results['error'])
+            return
+        
+        st.success("✅ PCA completata!")
+        st.metric("Varianza Spiegata Totale", f"{results['total_explained_variance']:.3f}")
+
+        # Grafico della varianza spiegata
+        explained_var = results['explained_variance_ratio']
+        fig = px.bar(x=[f"PC{i+1}" for i in range(len(explained_var))], y=explained_var, title="Varianza Spiegata per Componente")
+        st.plotly_chart(fig, use_container_width=True)
+    
+    def display_ml_results(self, ml_results: List[Dict[str, Any]], ml_configs: List[Dict[str, Any]]):
+        """Visualizza tutti i risultati ML."""
+        if not ml_results:
+            st.info("Nessun algoritmo ML configurato")
+            return
+        
+        st.markdown("### 🤖 Risultati Machine Learning")
+        for result, config in zip(ml_results, ml_configs):
+            algorithm = config.get('algorithm', 'N/A')
+            with st.expander(f"🧠 {algorithm}", expanded=True):
+                if algorithm in ['K-Means', 'DBSCAN']:
+                    self.visualize_clustering_results(result, config.get('features', []))
+                elif algorithm in ['Random Forest', 'XGBoost', 'Linear Regression', 'Logistic Regression', 'SVM']:
+                    self.visualize_supervised_results(result)
+                elif algorithm == 'PCA':
+                    self.visualize_pca_results(result)
+                elif 'error' in result:
+                     st.error(result['error'])
+
+
+### 5. FUNZIONI DI SUPPORTO
+# ==============================================================================
+def normalize_query_for_comparison(query: str) -> str:
+    """Normalizza una query per il confronto."""
+    if not query: return ""
+    query = re.sub(r'--.*?$', '', query, flags=re.MULTILINE)
+    query = re.sub(r'\s+', ' ', query.strip())
+    return query.lower()
+
+def find_predefined_config(query_text: str, config_key: str) -> List[Dict[str, Any]]:
+    """Trova configurazioni predefinite (grafici o ML) per una query."""
+    if not query_text.strip(): return []
+    query_normalized = normalize_query_for_comparison(query_text)
+    
+    try:
+        all_templates = get_twitter_query_templates()
+        for category, queries in all_templates.items():
+            for name, query_data in queries.items():
+                if isinstance(query_data, dict) and 'query' in query_data:
+                    template_normalized = normalize_query_for_comparison(query_data.get('query', ''))
+                    if query_normalized == template_normalized:
+                        configs = query_data.get(config_key, [])
+                        if configs:
+                            st.info(f"{config_key.replace('_', ' ').title()} caricati da: {name} ({category})")
+                        return configs
+    except Exception as e:
+        st.error(f"Errore nel caricamento delle configurazioni predefinite: {e}")
+    return []
+
+def is_hashable(series: pd.Series) -> bool:
+    """Controlla se una series pandas contiene dati hashable."""
+    try:
+        series.nunique()
+        return True
+    except TypeError:
+        return False
+
+def find_best_columns_for_analysis(df: pd.DataFrame) -> Tuple[Optional[str], Optional[str], str]:
+    """Trova le migliori colonne per un'analisi automatica."""
+    categorical_cols = df.select_dtypes(include=['object', 'category']).columns
+    numerical_cols = df.select_dtypes(include=np.number).columns
+    best_group_by = None
+    
+    suitable_candidates = {col: df[col].nunique() for col in categorical_cols if is_hashable(df[col]) and 3 < df[col].nunique() < 50}
+    if suitable_candidates:
+        best_group_by = min(suitable_candidates, key=suitable_candidates.get)
+    if not best_group_by:
+        return None, None, 'count'
+
+    possible_agg_cols = [col for col in numerical_cols if col != best_group_by]
+    if possible_agg_cols:
+        return best_group_by, possible_agg_cols[0], 'sum'
+    return best_group_by, 'count', 'count'
+
+def suggest_charts(df: pd.DataFrame) -> Dict[str, Dict[str, Any]]:
+    """Suggerisce grafici appropriati per un DataFrame aggregato."""
+    suggestions = {}
+    if df is None or df.empty or len(df.columns) < 2: return suggestions
+    cat_col, num_col = df.columns[0], df.columns[1]
+
+    suggestions['horizontal_bar'] = {'type': 'horizontal_bar', 'title': f'Classifica per {cat_col}', 'config': {'x_col': cat_col, 'y_col': num_col}}
+    if df[cat_col].nunique() <= 10 and df[num_col].min() >= 0:
+        suggestions['pie_chart'] = {'type': 'pie', 'title': f'Distribuzione per {cat_col}', 'config': {'labels_col': cat_col, 'values_col': num_col}}
+    return suggestions
+
+def _create_and_display_chart(df: pd.DataFrame, config: Dict[str, Any]):
+    """Crea e visualizza un singolo grafico Plotly."""
+    try:
+        st.markdown(f"**{config['title']}**")
+        fig = None
+        if config['type'] == 'horizontal_bar':
+            cfg = config['config']
+            fig = px.bar(df, x=cfg['y_col'], y=cfg['x_col'], orientation='h', title=config['title'], color=cfg['y_col'])
+            fig.update_layout(yaxis={'categoryorder': 'total ascending'})
+        elif config['type'] == 'pie':
+            cfg = config['config']
+            fig = px.pie(df, names=cfg['labels_col'], values=cfg['values_col'], title=config['title'])
+        if fig:
+            st.plotly_chart(fig, use_container_width=True)
+    except Exception as e:
+        st.error(f"Errore nella creazione del grafico '{config.get('title', 'N/A')}': {e}")
+
+def display_suggested_charts(df: pd.DataFrame, suggestions: Dict[str, Dict[str, Any]]):
+    """Mostra i grafici suggeriti in un layout a tab."""
+    if not suggestions: return
+    tab_names = [cfg['type'].replace('_', ' ').title() for cfg in suggestions.values()]
+    tabs = st.tabs(tab_names)
+    for tab, config in zip(tabs, suggestions.values()):
+        with tab:
+            _create_and_display_chart(df, config)
+
+def execute_smart_aggregation(analytics: GeneralAnalytics, params: Tuple, options: Tuple):
+    """Esegue l'aggregazione richiesta e mostra i risultati."""
+    group_by, agg_col, agg_type = params
+    limit, sort_desc = options
+    with st.spinner("Elaborazione analisi..."):
+        result = analytics.perform_aggregation(group_by, agg_col, agg_type, sort_desc)
+        if result is not None and not result.empty:
+            st.dataframe(result.head(limit), use_container_width=True)
+            suggestions = suggest_charts(result.head(limit))
+            display_suggested_charts(result.head(limit), suggestions)
+        else:
+            st.error("Nessun risultato trovato per l'aggregazione specificata.")
+
+### 6. FUNZIONE PRINCIPALE DELLA PAGINA
+# ==============================================================================
+
+def show_analytics_page():
+    """
+    Funzione principale per visualizzare la pagina di analisi.
+    """
+    dataset = st.session_state.get('last_query_result')
+    if dataset is None:
+        st.warning("Esegui una query SQL per caricare un dataset.")
+        return
+    if not isinstance(dataset, pd.DataFrame):
+        try:
+            dataset = dataset.toPandas()
+        except Exception as e:
+            st.error(f"Errore nella conversione del dataset: {e}")
+            return
+    if dataset.empty:
+        st.warning("Il dataset è vuoto.")
+        return
+
+    query_text = st.session_state.get('last_query_text', '')
+    predefined_charts = find_predefined_config(query_text, 'charts')
+    predefined_ml = find_predefined_config(query_text, 'ml_algorithms')
+    
+    if predefined_charts or predefined_ml:
+        st.markdown("## 🎯 Analisi Predefinite")
+        if predefined_charts:
+            ChartVisualizer().display_charts_from_config(dataset, predefined_charts)
+        if predefined_ml:
+            ml_processor = MLProcessor(dataset)
+            ml_visualizer = MLVisualizer(ml_processor)
+            with st.spinner("Esecuzione algoritmi ML..."):
+                ml_results = [ml_processor.execute_ml_config(cfg) for cfg in predefined_ml]
+            ml_visualizer.display_ml_results(ml_results, predefined_ml)
+        
+        if not st.checkbox("Mostra anche analisi automatica/manuale", value=False):
+            return
+        st.markdown("---")
+
+    st.markdown("## 🔬 Analisi Dati")
+    tab1, tab2 = st.tabs(["🤖 Analisi Automatica", "🔧 Analisi Manuale"])
+
+    with tab1:
+        general_analytics = GeneralAnalytics(dataset)
+        group_by_col, agg_col, agg_type = find_best_columns_for_analysis(dataset)
+        if group_by_col:
+            st.info(f"Analisi automatica suggerita: Aggregazione di **{agg_col}** per **{group_by_col}**.")
+            result_df = general_analytics.perform_aggregation(group_by_col, agg_col, agg_type, sort_desc=True)
+            if result_df is not None and not result_df.empty:
+                result_df = result_df.head(20)
+                st.dataframe(result_df, use_container_width=True)
+                suggestions = suggest_charts(result_df)
+                display_suggested_charts(result_df, suggestions)
+        else:
+            st.warning("Non è stato possibile identificare una combinazione di colonne per un'analisi automatica.")
+
+    with tab2:
+        st.markdown("### ⚙️ Configura la Tua Analisi")
+        cols = st.columns(3)
+        group_by = cols[0].selectbox("Raggruppa per:", [c for c in dataset.columns if is_hashable(dataset[c])])
+        agg_col = cols[1].selectbox("Aggrega colonna:", list(dataset.select_dtypes(include=np.number).columns) + ["count"])
+        agg_type = cols[2].selectbox("Tipo aggregazione:", ['sum', 'mean', 'max', 'min'] if agg_col != 'count' else ['count'])
+        
+        if st.button("🚀 Genera Analisi", type="primary", use_container_width=True):
+            execute_smart_aggregation(GeneralAnalytics(dataset), (group_by, agg_col, agg_type), (20, True))

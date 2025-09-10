@@ -23,19 +23,71 @@ logger = logging.getLogger(__name__)
 st.set_page_config(
     page_title=Config.PAGE_TITLE,
     page_icon=Config.PAGE_ICON,
-    layout=Config.LAYOUT
+    layout="centered"
 )
 
 def main():
     """Funzione principale dell'applicazione"""
            
-    # st.sidebar.markdown("---")
-    # st.sidebar.markdown("""
-    # <div style='text-align: center; color: gray; font-size: 0.8em;'>
-    # 🌪️ Disaster Analysis App<br>
-    # Powered by Apache Spark & Streamlit
-    # </div>
-    # """, unsafe_allow_html=True)
+    st.markdown("""
+    <style>
+        /* --- SIDEBAR --- */
+
+        /* 1. Imposta la larghezza della sidebar */
+        [data-testid="stSidebar"] {
+            /* Puoi usare %, ma un valore fisso in 'rem' è spesso più stabile */
+            width: 25rem !important;
+        }
+
+        /* 2. Rende il contenitore principale della sidebar un flexbox */
+        [data-testid="stSidebar"] > div:first-child {
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+            justify-content: space-between; /* Spinge il footer in basso */
+        }
+        
+        /* Contenitore per i pulsanti del footer */
+        .sidebar-footer {
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
+            padding-top: 1rem;
+        }
+
+        /* 3. Centra il contenuto della pagina con una larghezza massima */
+        [data-testid="stAppViewContainer"] .block-container {
+            max-width: 1200px !important;
+            margin-left: auto !important;
+            margin-right: auto !important;
+        }
+
+        /* ---- Stile per le metriche "Card" in Orizzontale (con !important) ---- */
+
+        [data-testid="stMetric"] {
+            background-color: #2E2E2E;
+            border: 1px solid #444444;
+            padding: 15px;
+            border-radius: 10px;
+            
+            /* REGOLE DI ALLINEAMENTO RINFORZATE */
+            display: flex !important;          /* Attiva la modalità Flexbox con priorità */
+            flex-direction: row !important;    /* Dispone gli elementi in riga */
+            align-items: baseline !important;  /* Allinea il testo sulla stessa linea di base */
+        }
+
+        /* Modifichiamo l'etichetta per darle spazio e un aspetto pulito */
+        [data-testid="stMetricLabel"] {
+            margin-right: 10px !important; /* Aggiunge spazio tra l'etichetta e il valore */
+            color: #A0A0A0 !important;
+            font-weight: normal !important;
+        }
+
+        /* Opzionale: Rendiamo il valore leggermente meno grande per un look bilanciato */
+        [data-testid="stMetricValue"] {
+            font-size: 1.75rem !important;
+            color: white !important;
+        }
+    </style>
+    """, unsafe_allow_html=True)
 
     home_main()
 

@@ -17,14 +17,20 @@
             "charts": []
         },
         "Volume Tweet Giornaliero": {
-            "query": "SELECT\n   \tTO_DATE(CONCAT(SUBSTRING(created_at, 5, 7),  SUBSTRING(created_at, 27, 4)), 'MMM dd yyyy') AS Data,\n  \tCONCAT(SUBSTRING(created_at, 12, 2), ':', SUBSTRING(created_at, 15, 2)) AS Orario,\n   \tCOUNT(*) AS Volume_Tweet\nFROM disasters\nWHERE created_at IS NOT NULL\nGROUP BY Data, Orario\nORDER BY Data, Orario;",
+            "query": "SELECT\n    TO_DATE(CONCAT(SUBSTRING(created_at, 5, 7), SUBSTRING(created_at, 27, 4)), 'MMM dd yyyy') AS Data,\n    CONCAT(SUBSTRING(created_at, 12, 2), ':',\n    SUBSTRING(created_at, 15, 2)) AS Orario,\n    COUNT(*) AS Volume_Tweet\nFROM disasters\nWHERE created_at IS NOT NULL\nGROUP BY Data,\n    Orario\nORDER BY Data, Orario;",
             "charts": [
                 {
                     "type": "Barre",
                     "x": "Data",
                     "y": "Volume_Tweet"
+                },
+                {
+                    "type": "Linee",
+                    "x": "Data",
+                    "y": "Volume_Tweet"
                 }
-            ]
+            ],
+            "ml_algorithms": []
         }
     },
     "🔍 Query di Base": {

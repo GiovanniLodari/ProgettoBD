@@ -38,8 +38,18 @@ class SparkManager:
             except Exception as e:
                 logger.error(f"Errore nell'impostazione di HADOOP_HOME: {e}")
                 st.warning("Potrebbero verificarsi errori di Hadoop/winutils su Windows.")
+
+            log_dir_base = "C:\\tmp"
+            event_log_dir = os.path.join(log_dir_base, "spark-events")
+
+            try:
+                os.makedirs(event_log_dir, exist_ok=True)
+                logger.info(f"Cartella per i log di Spark assicurata: {event_log_dir}")
+            except OSError as e:
+                logger.error(f"Impossibile creare la directory per i log di Spark: {e}")
+                st.error(f"Errore di permessi: non è stato possibile creare la cartella {event_log_dir}")
+                return None
             
-            # Configurazione base
             builder = SparkSession.builder \
                 .appName(Config.SPARK_APP_NAME) \
                 .master("local[*]") \
@@ -49,21 +59,21 @@ class SparkManager:
                 .config("spark.sql.adaptive.enabled", "true") \
                 .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer") \
                 .config("spark.sql.execution.arrow.pyspark.enabled", "true") \
-                .config("spark.sql.shuffle.partitions", "4") \
+                .config("spark.eventLog.enabled", "true") \
+                .config("spark.eventLog.dir", "/tmp/spark-events") \
+                .config("spark.sql.shuffle.partitions", "8") \
                 .config("spark.memory.fraction", "0.8")
 
             self.spark = builder.getOrCreate()
             
-            # Configurazioni memoria dinamiche
             if dataset_size_mb:
                 memory_configs = SparkConfig.get_memory_settings(dataset_size_mb)
                 for key, value in memory_configs.items():
                     builder = builder.config(key, value)
             
-            # Per sviluppo locale - modalità standalone
             try:
                 self.spark = builder.master("local[*]").getOrCreate()
-                self.spark.sparkContext.setLogLevel("WARN")  # Riduci logging
+                self.spark.sparkContext.setLogLevel("WARN")
                 self._session_initialized = True
                                 
             except Exception as e:

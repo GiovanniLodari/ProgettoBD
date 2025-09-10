@@ -6,6 +6,9 @@ REM ==================================================
 echo 🌪️ Avvio applicazione Streamlit
 echo ================================================================
 
+REM ===== Deattiva ambiente virtuale =====
+call "%VENV_PATH%\Scripts\deactivate.bat"
+
 REM ===== Configura Java =====
 REM Modifica questo percorso con quello della tua Java 17.0.12
 set "JAVA_HOME=C:\Program Files\Java\jdk-17"
@@ -80,7 +83,10 @@ if exist "requirements.txt" (
     pip install streamlit pandas pyspark plotly seaborn matplotlib pyarrow
 )
 
-REM ===== Crea directory =====
+REM ===== Spark History Server =====
+echo [INFO] Avvio Spark History Server...
+start "Spark History Server" "%SPARK_HOME%\bin\spark-class.cmd" org.apache.spark.deploy.history.HistoryServer
+start http://localhost:18080
 
 REM ===== Controllo porta =====
 set PORT=8501

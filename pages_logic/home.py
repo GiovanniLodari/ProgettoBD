@@ -46,9 +46,9 @@ st.markdown("""
     .main .block-container {padding-top: 1rem;}
     
     /* Nasconde completamente la sidebar */
-    section[data-testid="stSidebar"] {
+    /* section[data-testid="stSidebar"] {
         display: none !important;
-    }
+    }*/
     
     /* Assicura che il contenuto principale occupi tutto lo spazio */
     .main {
@@ -128,8 +128,9 @@ def main():
                         logger.info("Sessione Spark inizializzata. Decoompressione dei file in corso.")
                         st.session_state.data_loader = DataLoader(spark)
 
-                    with st.spinner(f"Decompressing {len(uploaded_files)} files..."):
-                        temp_paths = []
+                    tutti_file_gz = all(file.name.endswith('.gz') for file in uploaded_files)
+                    temp_paths = []
+                    with st.spinner(f"Decompressing {len(uploaded_files)} files...") if tutti_file_gz else st.spinner(f"Handling {len(uploaded_files)} files..."):
                         progress_bar = st.progress(0)
                         for idx, uploaded_file in enumerate(uploaded_files):
                             path = FileHandler.handle_uploaded_file(uploaded_file)

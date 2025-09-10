@@ -15,7 +15,7 @@ import os, json
 import re
 import traceback
 from typing import Optional, Dict, Any, List, Tuple
-from utils.utils import get_twitter_query_templates
+from utils.utils import get_twitter_query_templates, force_open_sidebar, force_close_sidebar
 from pages_logic.analytics_page import show_analytics_page
 
 logger = logging.getLogger(__name__)
@@ -217,6 +217,13 @@ def show_simplified_custom_query_page():
     
     with tab2:
         show_history_tab(query_engine)
+    
+    if st.session_state.get('show_save_form', False):
+        show_save_template_sidebar(
+            st.session_state.get('save_form_query', ''),
+            st.session_state.get('save_form_mode', 'new'),
+            st.session_state.get('save_form_existing_data', None)
+        )
 
 
 def show_dataset_info_safe(dataset):
@@ -240,11 +247,21 @@ def show_dataset_info_safe(dataset):
                 
                 row_count = st.session_state.row_count
                 
+                st.write("") 
+                st.write("") 
                 # --- Sezione Generalità ---
-                st.write(f"**Nome Tabella SQL:** `{view_name}`")
-                st.write(f"**Numero Righe:** {row_count:,}" if isinstance(row_count, int) else f"**Numero Righe:** {row_count}")
-                st.write(f"**Numero Colonne:** {len(dataset.columns)}")
-                
+                col0, col1, col2, col3, col5 = st.columns([0.5, 1, 1, 1, 0.5])
+
+                with col1:
+                    st.markdown(f"Nome Tabella SQL: `{view_name}`")
+            
+                with col2:
+                    formatted_rows = f"{row_count:,}" if isinstance(row_count, int) else row_count
+                    st.markdown(f"Numero Righe: `{formatted_rows}`")
+
+                with col3:
+                    st.markdown(f"Numero Colonne: `{len(dataset.columns)}`")
+                    
                 st.markdown("---")
 
                 # --- Sezione Schema Colonne ---
@@ -358,17 +375,30 @@ def show_simplified_editor_tab(query_engine, dataset):
                                 x_axis = chart.get('x', 'N/D')
                                 y_axis = chart.get('y', '')
                                 
-                                if y_axis:
-                                    st.markdown(
-                                        f"- Tipo Grafico: **{chart_type}**\n"
-                                        f"  - x: `{x_axis}`\n"
-                                        f"  - y: `{y_axis}`"
-                                    )
+                                if chart_type != "Heatmap":
+                                    if y_axis:
+                                        st.markdown(
+                                            f"- Grafico a {chart_type}\n"
+                                            f"  - x: `{x_axis}`\n"
+                                            f"  - y: `{y_axis}`"
+                                        )
+                                    else:
+                                        st.markdown(
+                                            f"Grafico a {chart_type}\n"
+                                            f"  - x: `{x_axis}`"
+                                        )
                                 else:
-                                    st.markdown(
-                                        f"Tipo Grafico: **{chart_type}**\n"
-                                        f"  - x: `{x_axis}`"
-                                    )
+                                    if y_axis:
+                                        st.markdown(
+                                            f"- {chart_type}\n"
+                                            f"  - x: `{x_axis}`\n"
+                                            f"  - y: `{y_axis}`"
+                                        )
+                                    else:
+                                        st.markdown(
+                                            f"{chart_type}\n"
+                                            f"  - x: `{x_axis}`"
+                                        )
                         else:
                             st.info("Nessun grafico predefinito.")
                     
@@ -391,7 +421,7 @@ def show_simplified_editor_tab(query_engine, dataset):
                             'query': query_text,
                             'charts': charts_config
                         }
-                        show_save_template_popup(query_text, mode='edit', existing_data=edit_data)
+                        open_save_form(query_text, mode='edit', existing_data=edit_data)
                     
                     # Pulsante elimina
                     if st.button("🗑️", key=f"delete_{category}_{name}", help="Elimina query", width="stretch"):
@@ -434,7 +464,8 @@ def show_simplified_editor_tab(query_engine, dataset):
     
     if save_template_button:
         if query_text.strip():
-            show_save_template_popup(query_text)
+            #show_save_template_popup(query_text)
+            open_save_form(query_text)
         else:
             st.error("❌ Scrivi una query prima di salvarla!")
     
@@ -542,7 +573,7 @@ def show_delete_confirmation_dialog(category: str, name: str):
         deleted = False
 
         with col1:
-            if st.button("✅ Sì, elimina", type="primary", use_container_width=True):
+            if st.button("✅ Sì, elimina", type="primary", width='stretch'):
                 # Procedi con l'eliminazione
                 try:
                     file_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'custom_query.json')
@@ -581,7 +612,7 @@ def show_delete_confirmation_dialog(category: str, name: str):
                 st.rerun()
         
         with col2:
-            if st.button("❌ Annulla", use_container_width=True):
+            if st.button("❌ Annulla", width='stretch'):
                 st.rerun()
 
         if deleted:
@@ -590,244 +621,513 @@ def show_delete_confirmation_dialog(category: str, name: str):
     delete_confirmation_dialog()
 
 
-def show_save_template_popup(query_text: str, mode: str = 'new', existing_data: Dict = None):
-    """Mostra popup per salvare o modificare un template personalizzato."""
-
-    dialog_title = "💾 Salva Nuova Query" if mode == 'new' else "✏️ Modifica Query"
+def show_save_template_sidebar(query_text: str, mode: str = 'new', existing_data: Dict = None):
+    """Mostra form nella sidebar per salvare o modificare un template personalizzato."""
     
-    @st.dialog(dialog_title)
-    def save_template_dialog():
+    # Controlla se il form deve essere mostrato
+    show_form = st.session_state.get('show_save_form', False)
+    
+    if not show_form:
+        return
+    
+    with st.sidebar:
+        st.markdown('<div class="sidebar-content">', unsafe_allow_html=True)
+        form_title = "💾 Salva Nuova Query" if mode == 'new' else "✏️ Modifica Query"
+        st.markdown(f"### {form_title}")
+        
         current_query = query_text
 
+        # Inizializzazione dati per modalità edit
         if mode == 'edit' and existing_data:
-            # Se siamo in modifica, pre-popoliamo i campi
-            st.session_state.setdefault('charts_config', existing_data.get('charts', []))
+            if 'form_initialized' not in st.session_state or not st.session_state['form_initialized']:
+                # Se siamo in modifica, FORZA il caricamento dei dati esistenti
+                st.session_state['charts_config'] = existing_data.get('charts', [])
+                st.session_state['ml_config'] = existing_data.get('ml_algorithms', [])
+                st.session_state['form_initialized'] = True
+                
             default_category = existing_data.get('category', '')
             default_name = existing_data.get('name', '')
             query_to_save = existing_data.get('query', query_text)
+            
             st.info(f"Stai modificando la query '{default_name}' nella categoria '{default_category}'.")
+            
+            # Debug info per verificare il caricamento
+            if st.session_state.get('charts_config', []):
+                st.success(f"📊 Caricati {len(st.session_state['charts_config'])} grafici esistenti")
+            if st.session_state.get('ml_config', []):
+                st.success(f"🤖 Caricati {len(st.session_state['ml_config'])} algoritmi ML esistenti")
         else:
+            # Modalità new - inizializza solo se non esistono già
             st.session_state.setdefault('charts_config', [])
+            st.session_state.setdefault('ml_config', [])
+            st.session_state.setdefault('form_initialized', True)
             default_category = ""
             default_name = ""
             query_to_save = query_text
 
         if not current_query.strip():
             st.error("❌ Nessuna query presente nell'editor!")
-            if st.button("Chiudi"):
-                st.rerun()
             return
         
-        col1_out, col2_out = st.columns([1, 2])
+        # Sezione categoria e nome
         
-        with col1_out:
-            category_type = st.radio(
-                "Tipo categoria:",
-                ["Esistente", "Nuova"],
-                help="Scegli se usare una categoria esistente o crearne una nuova",
-                key="category_radio_choice"
-            )
+        category_type = st.radio(
+            "Tipo categoria:",
+            ["Esistente", "Nuova"],
+            help="Scegli se usare una categoria esistente o crearne una nuova",
+            key="sidebar_category_radio_choice"
+        )
 
         category = ""
-        with col2_out:
-            all_templates = get_twitter_query_templates()
-            existing_categories = list(all_templates.keys())
+        all_templates = get_twitter_query_templates()
+        existing_categories = list(all_templates.keys())
 
-            if category_type == "Esistente":
-                if existing_categories:
-                    # In modalità edit, pre-seleziona la categoria corrente se esiste
-                    default_index = 0
-                    if mode == 'edit' and default_category in existing_categories:
-                        default_index = existing_categories.index(default_category)
-                    
-                    category = st.selectbox(
-                        "Categoria:", 
-                        existing_categories, 
-                        index=default_index,
-                        key="existing_category_select"
-                    )
-                else:
-                    st.info("Nessuna categoria esistente trovata. Sarà creata una nuova categoria.")
-                    category = st.text_input(
-                        "Nome della nuova categoria:", 
-                        value=default_category if mode == 'edit' else "Custom", 
-                        key="new_category_text_1"
-                    )
+        if category_type == "Esistente":
+            if existing_categories:
+                # In modalità edit, pre-seleziona la categoria corrente se esiste
+                default_index = 0
+                if mode == 'edit' and default_category in existing_categories:
+                    default_index = existing_categories.index(default_category)
+                
+                category = st.selectbox(
+                    "Categoria:", 
+                    existing_categories, 
+                    index=default_index,
+                    key="sidebar_existing_category_select"
+                )
             else:
+                st.info("Nessuna categoria esistente trovata. Sarà creata una nuova categoria.")
                 category = st.text_input(
                     "Nome della nuova categoria:", 
-                    value=default_category if mode == 'edit' else "",
-                    placeholder="es. Analisi Custom", 
-                    key="new_category_text_2"
+                    value=default_category if mode == 'edit' else "Custom", 
+                    key="sidebar_new_category_text_1"
                 )
-
-        with st.form("save_template_form"):
-            template_name = st.text_input(
-                "Nome query:", 
-                value=default_name if mode == 'edit' else "",
-                placeholder="es. example query"
+        else:
+            category = st.text_input(
+                "Nome della nuova categoria:", 
+                value=default_category if mode == 'edit' else "",
+                placeholder="es. Analisi Custom", 
+                key="sidebar_new_category_text_2"
             )
-            
-            st.write("**Query da salvare:**")
+
+        template_name = st.text_input(
+            "Nome query:", 
+            value=default_name if mode == 'edit' else "",
+            placeholder="es. example query",
+            key="sidebar_template_name"
+        )
+        
+        # Mostra query in versione compatta
+        with st.expander("📝 Query da salvare", expanded=False):
             st.code(current_query, language="sql")
 
-            # ----------------- SEZIONE GRAFICI -----------------
-            st.markdown("### 📊 Configurazione Grafici")
+        # Ottieni le colonne per entrambe le sezioni
+        try:
+            columns = get_query_columns(current_query, st.session_state.spark_manager.get_spark_session())
+        except Exception:
+            columns = []
 
-            if "charts_config" not in st.session_state:
-                st.session_state.charts_config = []
+        st.divider()
+        
+        # ----------------- SEZIONE GRAFICI -----------------
+        st.markdown("#### 📊 Configurazione Grafici")
 
-            try:
-                columns = get_query_columns(current_query, st.session_state.spark_manager.get_spark_session())
-            except Exception:
-                columns = []
+        # Pulsante per aggiungere grafico
+        if st.button("➕ Aggiungi grafico", key="sidebar_add_chart_btn"):
+            st.session_state.charts_config.append({"type": "Barre", "x": None, "y": None})
+            st.rerun()
 
-            add_chart = st.form_submit_button("➕ Aggiungi grafico")
-            if add_chart:
-                st.session_state.charts_config.append({"type": "Barre", "x": None, "y": None})
-                st.rerun()
+        chart_types = ["Barre", "Linee", "Torta", "Heatmap"]
 
-            types = ["Barre", "Linee", "Torta", "Heatmap"]
-            
-            chart_to_remove = None
-            
+        # Visualizza tutti i grafici configurati
+        if st.session_state.get('charts_config', []):
             for i, cfg in enumerate(st.session_state.charts_config):
-                with st.expander(f"Grafico {i+1}", expanded=True):
-                    col_config, col_remove = st.columns([5, 1])
+                with st.expander(f"📊 Grafico {i+1}", expanded=False):
+                    # Tipo di grafico
+                    type_index = 0
+                    if cfg.get("type") and cfg["type"] in chart_types:
+                        type_index = chart_types.index(cfg["type"])
                     
-                    with col_config:
-                        cfg["type"] = st.selectbox(
-                            "Tipo di grafico:",
-                            types,
-                            index=types.index(cfg.get("type", "Barre")),
-                            key=f"chart_type_{i}"
+                    new_type = st.selectbox(
+                        "Tipo:",
+                        chart_types,
+                        index=type_index,
+                        key=f"sidebar_chart_type_{i}"
+                    )
+                    cfg["type"] = new_type
+
+                    if columns:
+                        # Asse X
+                        x_index = 0
+                        if cfg.get("x") and cfg["x"] in columns:
+                            x_index = columns.index(cfg["x"])
+                        
+                        new_x = st.selectbox(
+                            "Asse X:",
+                            columns,
+                            index=x_index,
+                            key=f"sidebar_x_col_{i}"
                         )
+                        cfg["x"] = new_x
 
-                        if columns:
-                            # Pre-seleziona le colonne se esistono nei dati
-                            x_index = 0
-                            if cfg.get("x") and cfg["x"] in columns:
-                                x_index = columns.index(cfg["x"])
-                            
-                            cfg["x"] = st.selectbox(
-                                "Colonna asse X:",
-                                columns,
-                                index=x_index,
-                                key=f"x_col_{i}"
-                            )
+                        # Asse Y
+                        y_options = [""] + columns
+                        y_index = 0
+                        if cfg.get("y") and cfg["y"] in columns:
+                            y_index = columns.index(cfg["y"]) + 1
+                        
+                        new_y = st.selectbox(
+                            "Asse Y (opz.):",
+                            y_options,
+                            index=y_index,
+                            key=f"sidebar_y_col_{i}"
+                        )
+                        cfg["y"] = new_y if new_y != "" else None
+                    else:
+                        st.warning("⚠️ Impossibile determinare le colonne dalla query.")
+                    
+                    # Pulsante rimozione
+                    if st.button("🗑️ Rimuovi", key=f"sidebar_remove_chart_{i}"):
+                        st.session_state.charts_config.pop(i)
+                        st.rerun()
+        else:
+            st.info("Nessun grafico configurato.")
 
-                            y_options = [""] + columns
-                            y_index = 0
-                            if cfg.get("y") and cfg["y"] in columns:
-                                y_index = columns.index(cfg["y"]) + 1
+        st.divider()
+
+        # ----------------- SEZIONE MACHINE LEARNING -----------------
+        st.markdown("#### 🤖 Configurazione ML")
+
+        # Pulsante per aggiungere algoritmo ML
+        if st.button("➕ Aggiungi algoritmo ML", key="sidebar_add_ml_btn"):
+            st.session_state.ml_config.append({
+                "algorithm": "K-Means", 
+                "features": [], 
+                "target": None,
+                "params": {}
+            })
+            st.rerun()
+
+        ml_algorithms = {
+            "K-Means": {"type": "clustering", "params": []},
+            "DBSCAN": {"type": "clustering", "params": []},
+            "Random Forest": {"type": "supervised", "params": []},
+            "XGBoost": {"type": "supervised", "params": []},
+            "Linear Regression": {"type": "supervised", "params": []},
+            "Logistic Regression": {"type": "supervised", "params": []},
+            "SVM": {"type": "supervised", "params": []},
+            "PCA": {"type": "dimensionality", "params": ["n_components"]}
+        }
+        
+        # Visualizza tutti gli algoritmi ML configurati
+        if st.session_state.get('ml_config', []):
+            for i, ml_cfg in enumerate(st.session_state.ml_config):
+                algorithm = ml_cfg.get('algorithm', 'K-Means')
+                
+                with st.expander(f"🤖 ML {i+1} - {algorithm}", expanded=False):
+                    # Selezione algoritmo
+                    algorithm_options = list(ml_algorithms.keys())
+                    current_alg = ml_cfg.get("algorithm", "K-Means")
+                    if current_alg not in algorithm_options:
+                        current_alg = "K-Means"
+                    
+                    alg_index = algorithm_options.index(current_alg)
+                    new_algorithm = st.selectbox(
+                        "Algoritmo:",
+                        algorithm_options,
+                        index=alg_index,
+                        key=f"sidebar_ml_algorithm_{i}"
+                    )
+                    ml_cfg["algorithm"] = new_algorithm
+
+                    selected_algorithm = ml_cfg["algorithm"]
+                    algorithm_info = ml_algorithms[selected_algorithm]
+
+                    if columns:
+                        # Selezione features
+                        current_features = ml_cfg.get("features", [])
+                        valid_features = [f for f in current_features if f in columns]
+                        
+                        new_features = st.multiselect(
+                            "Features:",
+                            columns,
+                            default=valid_features,
+                            key=f"sidebar_ml_features_{i}",
+                            help="Seleziona le colonne da utilizzare come input"
+                        )
+                        ml_cfg["features"] = new_features
+
+                        # Target solo per algoritmi supervisionati
+                        if algorithm_info["type"] == "supervised":
+                            target_options = [""] + columns
+                            current_target = ml_cfg.get("target", "")
+                            target_index = 0
+                            if current_target and current_target in columns:
+                                target_index = target_options.index(current_target)
                             
-                            cfg["y"] = st.selectbox(
-                                "Colonna asse Y (se applicabile):",
-                                y_options,
-                                index=y_index,
-                                key=f"y_col_{i}"
+                            new_target = st.selectbox(
+                                "Target:",
+                                target_options,
+                                index=target_index,
+                                key=f"sidebar_ml_target_{i}",
+                                help="Variabile dipendente per la predizione"
                             )
+                            ml_cfg["target"] = new_target if new_target != "" else None
                         else:
-                            st.warning("⚠️ Impossibile determinare le colonne dalla query.")
+                            ml_cfg["target"] = None
+
+                        # Parametri algoritmo (solo PCA)
+                        if algorithm_info["params"]:
+                            if "params" not in ml_cfg:
+                                ml_cfg["params"] = {}
+
+                            for param in algorithm_info["params"]:
+                                if param == "n_components":
+                                    max_components = len(ml_cfg.get("features", [])) if ml_cfg.get("features") else 10
+                                    if max_components == 0:
+                                        max_components = 2
+                                    default_val = ml_cfg["params"].get(param, min(2, max_components))
+                                    new_param_val = st.number_input(
+                                        f"N. componenti:",
+                                        min_value=1,
+                                        max_value=max_components,
+                                        value=int(default_val),
+                                        key=f"sidebar_ml_param_{param}_{i}"
+                                    )
+                                    ml_cfg["params"][param] = new_param_val
+                        else:
+                            ml_cfg["params"] = {}
+                    else:
+                        st.warning("⚠️ Impossibile determinare le colonne dalla query.")
                     
-                    with col_remove:
-                        st.write("")  # Spazio per allineare verticalmente
-                        st.write("")  # Altro spazio
-                        remove_clicked = st.form_submit_button(
-                            "🗑️", 
-                            key=f"remove_chart_{i}",
-                            help=f"Rimuovi Grafico {i+1}"
-                        )
-                        if remove_clicked:
-                            chart_to_remove = i
+                    # Pulsante rimozione
+                    if st.button("🗑️ Rimuovi", key=f"sidebar_remove_ml_{i}"):
+                        st.session_state.ml_config.pop(i)
+                        st.rerun()
+        else:
+            st.info("Nessun algoritmo ML configurato.")
+
+        st.markdown('</div>', unsafe_allow_html=True)
+        
+        # ----------------- PULSANTI SALVATAGGIO -----------------        
+        col_save, col_cancel = st.columns(2)
+
+        with col_save:
+            save_button_text = "💾 Salva Query" if mode == 'edit' else "💾 Salva Query"
+            save_clicked = st.button(save_button_text, type="primary", key="sidebar_save_btn")
+
+        with col_cancel:
+            cancel_clicked = st.button("❌ Annulla", key="sidebar_cancel_btn")
+
+        st.markdown('<div class="sidebar-footer">', unsafe_allow_html=True)
+        st.sidebar.markdown("""
+            <div style='text-align: center; color: gray; font-size: 0.8em;'>
+            🌪️ Disaster Analysis App<br>
+            Powered by Apache Spark & Streamlit
+            </div>
+        """, unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+                
+        # Gestione click pulsanti
+        if save_clicked:
+            if not category.strip() or not template_name.strip():
+                st.error("❌ Categoria e nome template sono obbligatori!")
+                return
             
-            # Rimuovi il grafico selezionato
-            if chart_to_remove is not None:
-                st.session_state.charts_config.pop(chart_to_remove)
-                st.rerun()
-            # --------------------------------------------------
-
-            col_save, col_cancel = st.columns(2)
-
-            with col_save:
-                save_button_text = "💾 Salva Modifiche" if mode == 'edit' else "💾 Salva Query"
-                save_submitted = st.form_submit_button(save_button_text, type="primary")
-
-            with col_cancel:
-                cancel_submitted = st.form_submit_button("❌ Annulla")
-
-            if save_submitted:
-                if not category.strip() or not template_name.strip():
-                    st.error("❌ Categoria e nome template sono obbligatori!")
+            # Validazione algoritmi ML
+            for i, ml_cfg in enumerate(st.session_state.get('ml_config', [])):
+                if not ml_cfg.get("features"):
+                    st.error(f"❌ L'algoritmo ML {i+1} deve avere almeno una feature selezionata!")
                     return
                 
-                if mode == 'edit' and existing_data:
-                    original_category = existing_data.get('category', '')
-                    original_name = existing_data.get('name', '')
-                    
-                    if original_category != category or original_name != template_name:
-                        try:
-                            file_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'custom_query.json')
-                            templates_to_update = get_twitter_query_templates()
+                if (ml_algorithms[ml_cfg["algorithm"]]["type"] == "supervised" and 
+                    not ml_cfg.get("target")):
+                    st.error(f"❌ L'algoritmo supervisionato {ml_cfg['algorithm']} deve avere un target!")
+                    return
+            
+            # Gestione modifica (rimozione del vecchio template se cambiato nome/categoria)
+            if mode == 'edit' and existing_data:
+                original_category = existing_data.get('category', '')
+                original_name = existing_data.get('name', '')
+                
+                if original_category != category or original_name != template_name:
+                    try:
+                        file_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'custom_query.json')
+                        templates_to_update = get_twitter_query_templates()
+                        
+                        if (original_category in templates_to_update and 
+                            original_name in templates_to_update[original_category]):
+                            del templates_to_update[original_category][original_name]
                             
-                            if (original_category in templates_to_update and 
-                                original_name in templates_to_update[original_category]):
-                                del templates_to_update[original_category][original_name]
-                                
-                                if not templates_to_update[original_category]:
-                                    del templates_to_update[original_category]
-                                
-                                with open(file_path, 'w', encoding='utf-8') as f:
-                                    json.dump(templates_to_update, f, indent=4, ensure_ascii=False)
-                        except Exception as e:
-                            st.warning(f"⚠️ Avviso durante la rimozione del template originale: {e}")
-                
-                if 'custom_templates' not in st.session_state:
-                    st.session_state.custom_templates = {}
-                
-                if category not in st.session_state.custom_templates:
-                    st.session_state.custom_templates[category] = {}
-                
-                st.session_state.custom_templates[category][template_name] = {
-                    'query': current_query,
-                    'created_at': pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S'),
-                    'charts': st.session_state.charts_config
-                }
+                            if not templates_to_update[original_category]:
+                                del templates_to_update[original_category]
+                            
+                            with open(file_path, 'w', encoding='utf-8') as f:
+                                json.dump(templates_to_update, f, indent=4, ensure_ascii=False)
+                    except Exception as e:
+                        st.warning(f"⚠️ Avviso durante la rimozione del template originale: {e}")
+            
+            # Salvataggio del nuovo/modificato template
+            if 'custom_templates' not in st.session_state:
+                st.session_state.custom_templates = {}
+            
+            if category not in st.session_state.custom_templates:
+                st.session_state.custom_templates[category] = {}
+            
+            st.session_state.custom_templates[category][template_name] = {
+                'query': current_query,
+                'created_at': pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'charts': st.session_state.get('charts_config', []),
+                'ml_algorithms': st.session_state.get('ml_config', [])
+            }
 
-                file_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'custom_query.json')
-                templates_to_save = get_twitter_query_templates()
-                
-                if category not in templates_to_save:
-                    templates_to_save[category] = {}
+            file_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'custom_query.json')
+            templates_to_save = get_twitter_query_templates()
+            
+            if category not in templates_to_save:
+                templates_to_save[category] = {}
 
-                current_query = format_sql_for_json(current_query)
+            current_query_formatted = format_sql_for_json(current_query)
 
-                templates_to_save[category][template_name] = {
-                    "query": current_query,
-                    "charts": st.session_state.charts_config
-                }
+            templates_to_save[category][template_name] = {
+                "query": current_query_formatted,
+                "charts": st.session_state.get('charts_config', []),
+                "ml_algorithms": st.session_state.get('ml_config', [])
+            }
+            
+            try:
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    json.dump(templates_to_save, f, indent=4, ensure_ascii=False)
                 
-                try:
-                    with open(file_path, 'w', encoding='utf-8') as f:
-                        json.dump(templates_to_save, f, indent=4, ensure_ascii=False)
-                    
-                    success_message = (f"✅ Template '{template_name}' modificato con successo!" 
-                                     if mode == 'edit' 
-                                     else f"✅ Template '{template_name}' salvato nella categoria '{category}'!")
-                    st.success(success_message)
-                except Exception as e:
-                    st.error(f"❌ Errore durante il salvataggio del file: {e}")
+                success_message = (f"✅ Template '{template_name}' modificato con successo!" 
+                                 if mode == 'edit' 
+                                 else f"✅ Template '{template_name}' salvato nella categoria '{category}'!")
+                st.success(success_message)
                 
-                import time
-                time.sleep(1)
+                # Chiudi il form dopo il salvataggio
+                st.session_state.show_save_form = False
+                if 'charts_config' in st.session_state:
+                    del st.session_state['charts_config']
+                if 'ml_config' in st.session_state:
+                    del st.session_state['ml_config']
+                if 'form_initialized' in st.session_state:
+                    del st.session_state['form_initialized']
+                
                 st.rerun()
+                
+            except Exception as e:
+                st.error(f"❌ Errore durante il salvataggio del file: {e}")
+        
+        force_close_sidebar()
 
-            if cancel_submitted:
-                st.rerun()
+        if cancel_clicked:
+            st.session_state.show_save_form = False
+            # Pulisci le configurazioni temporanee
+            if 'charts_config' in st.session_state:
+                del st.session_state['charts_config']
+            if 'ml_config' in st.session_state:
+                del st.session_state['ml_config']
+            if 'form_initialized' in st.session_state:
+                del st.session_state['form_initialized']
+            force_close_sidebar()
+            st.rerun()
 
-    # QUESTA È LA RIGA MANCANTE - CHIAMA EFFETTIVAMENTE LA FUNZIONE!
-    save_template_dialog()
+def open_save_form(query_text: str, mode: str = 'new', existing_data: Dict = None):
+    """Apre il form di salvataggio nella sidebar."""
+    st.info("Apri la sidebar a sinistra per continuare.")
+    st.session_state.show_save_form = True
+    st.session_state.save_form_query = query_text
+    st.session_state.save_form_mode = mode
+    st.session_state.save_form_existing_data = existing_data
+    st.session_state.form_initialized = False  # Reset per permettere re-inizializzazione
+    force_open_sidebar()
+    #st.rerun()
 
+
+
+def is_numeric_column(column_name: str, query: str = None, spark_session=None) -> bool:
+    """
+    Determina se una colonna è numerica utilizzando diversi metodi:
+    1. Metadati dal Spark DataFrame (se disponibile)
+    2. Analisi del nome della colonna
+    3. Pattern comuni nei nomi delle colonne
+    """
+    
+    if spark_session and query:
+        try:
+            limited_query = f"SELECT * FROM ({query}) LIMIT 1"
+            df = spark_session.sql(limited_query)
+            
+            for field in df.schema.fields:
+                if field.name.lower() == column_name.lower():
+                    field_type = str(field.dataType).lower()
+                    numeric_types = ['int', 'integer', 'long', 'float', 'double', 'decimal', 'bigint', 'smallint', 'tinyint']
+                    return any(num_type in field_type for num_type in numeric_types)
+        except Exception:
+            pass
+    
+    column_lower = column_name.lower().strip()
+    
+    numeric_keywords = [
+        'count', 'cnt', 'num', 'number', 'total', 'sum', 'amount',
+        'avg', 'average', 'mean', 'median', 'min', 'max', 'std', 'variance',
+        'price', 'cost', 'revenue', 'profit', 'sales', 'budget',
+        'score', 'rating', 'rank', 'points', 'grade', 'percentage', 'percent',
+        'id', 'index', 'key', 'code',
+        'size', 'length', 'width', 'height', 'weight', 'volume', 'area',
+        'year', 'month', 'day', 'hour', 'minute', 'second', 'timestamp',
+        'balance', 'debt', 'credit', 'interest', 'rate', 'value', 'worth',
+        'likes', 'shares', 'comments', 'retweets', 'followers', 'following',
+        'views', 'impressions', 'clicks', 'engagement'
+    ]
+    
+    if any(keyword in column_lower for keyword in numeric_keywords):
+        return True
+    
+    numeric_patterns = [
+        r'.*_cnt$',
+        r'.*_count$',
+        r'.*_num$',
+        r'.*_id$',
+        r'.*_amount$',
+        r'.*_total$',
+        r'.*_sum$',
+        r'.*_avg$',
+        r'.*_rate$',
+        r'.*_score$',
+        r'.*_value$',
+        r'^num_.*',
+        r'^cnt_.*',
+        r'^total_.*',
+        r'^avg_.*',
+        r'.*\d+.*',
+    ]
+    
+    for pattern in numeric_patterns:
+        if re.match(pattern, column_lower):
+            return True
+    
+    text_keywords = [
+        'name', 'title', 'description', 'text', 'content', 'message',
+        'comment', 'note', 'address', 'email', 'url', 'link',
+        'status', 'type', 'category', 'tag', 'label', 'class',
+        'username', 'user_name', 'full_name', 'first_name', 'last_name'
+    ]
+    
+    if any(keyword in column_lower for keyword in text_keywords):
+        return False
+    return True
+
+
+def get_default_param_value(param_name: str):
+    """
+    Restituisce i valori di default per i parametri ML.
+    Ora contiene solo i parametri che l'utente può configurare manualmente.
+    """
+    defaults = {
+        'n_components': 2
+    }
+    return defaults.get(param_name, 1)
 
 def show_delete_confirmation_dialog(category: str, name: str):
     """Mostra dialog di conferma per eliminazione query"""
@@ -842,7 +1142,7 @@ def show_delete_confirmation_dialog(category: str, name: str):
         deleted = False
 
         with col1:
-            if st.button("✅ Sì, elimina", type="primary", use_container_width=True):
+            if st.button("✅ Sì, elimina", type="primary", width='stretch'):
                 # Procedi con l'eliminazione
                 try:
                     file_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'custom_query.json')
@@ -881,7 +1181,7 @@ def show_delete_confirmation_dialog(category: str, name: str):
                 st.rerun()
         
         with col2:
-            if st.button("❌ Annulla", use_container_width=True):
+            if st.button("❌ Annulla", width='stretch'):
                 st.rerun()
 
         if deleted:
@@ -912,7 +1212,7 @@ def format_sql_for_json(sql: str) -> str:
         sql = re.sub(rf"\s+{kw}\b", f"\n{kw}", sql, flags=re.IGNORECASE)
 
     sql = re.sub(r"SELECT\s+", "SELECT\n    ", sql, flags=re.IGNORECASE)
-    sql = re.sub(r",\s*", ",\n    ", sql)
+    #sql = re.sub(r",\s*", ",\n    ", sql)
     sql = re.sub(r"\n\s+\n", "\n", sql)
 
     return sql
