@@ -30,7 +30,18 @@
                     "y": "Volume_Tweet"
                 }
             ],
-            "ml_algorithms": []
+            "ml_algorithms": [
+                {
+                    "algorithm": "Isolation Forest",
+                    "features": [
+                        "Data",
+                        "Orario",
+                        "Volume_Tweet"
+                    ],
+                    "target": null,
+                    "params": {}
+                }
+            ]
         }
     },
     "🔍 Query di Base": {

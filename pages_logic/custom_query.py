@@ -809,14 +809,21 @@ def show_save_template_sidebar(query_text: str, mode: str = 'new', existing_data
             st.rerun()
 
         ml_algorithms = {
+            # Clustering
             "K-Means": {"type": "clustering", "params": []},
             "DBSCAN": {"type": "clustering", "params": []},
+            
+            # Supervisionati
             "Random Forest": {"type": "supervised", "params": []},
             "XGBoost": {"type": "supervised", "params": []},
             "Linear Regression": {"type": "supervised", "params": []},
             "Logistic Regression": {"type": "supervised", "params": []},
             "SVM": {"type": "supervised", "params": []},
-            "PCA": {"type": "dimensionality", "params": ["n_components"]}
+
+            # Anomaly Detection
+            "Isolation Forest": {"type": "anomaly", "params": []},
+            "STL Decomposition": {"type": "anomaly", "params": []},
+            "Prophet": {"type": "anomaly", "params": []}
         }
         
         # Visualizza tutti gli algoritmi ML configurati

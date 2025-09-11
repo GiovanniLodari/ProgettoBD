@@ -87,6 +87,7 @@ class ChartVisualizer:
     Classe per gestire la visualizzazione automatica dei grafici basata sui metadati JSON.
     """
     def __init__(self):
+        self.CHART_COLOR = '#89CFF0'#0DF9FF'#19D3F3'
         self.color_palettes = {
             'default': px.colors.qualitative.Set3,
             'viridis': px.colors.sequential.Viridis,
@@ -146,7 +147,7 @@ class ChartVisualizer:
             return [], 0.0
 
     def create_chart(self, df: pd.DataFrame, chart_config: Dict[str, Any]) -> Optional[go.Figure]:
-        """Crea un grafico basato sulla configurazione."""
+        """Crea un grafico basato sulla configurazione con gestione centralizzata dei dati."""
         if df.empty:
             return None
         
@@ -160,94 +161,241 @@ class ChartVisualizer:
         y_col = chart_config.get('y')
         
         try:
-            fig = None
+            # ========== PREPARAZIONE CENTRALIZZATA DEI DATI ==========
+            prepared_data = self._prepare_chart_data(df, x_col, y_col, chart_type)
             
-            if chart_type == 'barre':
-                if not y_col or y_col == '':
-                    counts = df[x_col].value_counts().head(20)
-                    fig = px.bar(x=counts.values, y=counts.index, orientation='h',
-                               title=f"Distribuzione di {x_col}")
-                    fig.update_layout(yaxis={'categoryorder': 'total ascending'})
-                else:
-                    if df[x_col].dtype == 'object' and df[y_col].dtype in ['int64', 'float64']:
-                        agg_df = df.groupby(x_col)[y_col].sum().reset_index()
-                        agg_df = agg_df.sort_values(y_col, ascending=False).head(20)
-                        fig = px.bar(agg_df, x=x_col, y=y_col, title=f"{y_col} per {x_col}")
-                    else:
-                        fig = px.bar(df.head(20), x=x_col, y=y_col, title=f"{y_col} per {x_col}")
+            if prepared_data is None or prepared_data['df'].empty:
+                st.warning("Nessun dato valido dopo la preparazione.")
+                return None
             
-            elif chart_type == 'linee':
-                is_temporal = pd.api.types.is_datetime64_any_dtype(df[x_col])
-
-                if is_temporal:
-                    st.info("Rilevata serie temporale, dati aggregati per giorno.")
-                    
-                    if pd.api.types.is_numeric_dtype(df[y_col]):
-                        agg_df = df.groupby(df[x_col].dt.date)[y_col].sum().reset_index()
-                    else:
-                        agg_df = df.groupby(df[x_col].dt.date).size().reset_index(name=y_col)
-                        
-                    df_to_plot = agg_df.sort_values(x_col)
-                    title = f"Trend GIORNALIERO di {y_col} rispetto a {x_col}"
-                
-                else:
-                    df_to_plot = df.sort_values(x_col).head(500)
-                    title = f"Trend di {y_col} rispetto a {x_col}"
-
-                fig = px.line(df_to_plot, x=x_col, y=y_col, title=title, markers=True)
+            # Estrai i dati preparati
+            df_final = prepared_data['df']
+            x_col_final = prepared_data['x_col']
+            y_col_final = prepared_data['y_col']
+            is_temporal_discrete = prepared_data['is_temporal_discrete']
             
-            elif chart_type == 'serie temporale con picchi':
-                df_sorted = df.sort_values(x_col).dropna(subset=[x_col, y_col])
-                
-                if len(df_sorted) > 1000:
-                    df_sorted = df_sorted.tail(1000)
-                
-                fig = px.line(df_sorted, x=x_col, y=y_col, title=f"Serie Temporale con Picchi - {y_col} vs {x_col}")
-                
-                peaks_idx, threshold = self._detect_peaks(df_sorted, x_col, y_col)
-                
-                if len(peaks_idx) > 0:
-                    peak_x_values = df_sorted[x_col].iloc[peaks_idx]
-                    peak_y_values = df_sorted[y_col].iloc[peaks_idx]
-                    
-                    fig.add_trace(go.Scatter(
-                        x=peak_x_values, y=peak_y_values, mode='markers', name=f'Picchi (n={len(peaks_idx)})',
-                        marker=dict(color='red', size=10, symbol='triangle-up', line=dict(width=2, color='darkred')),
-                        hovertemplate=f'<b>Picco</b><br>{x_col}: %{{x}}<br>{y_col}: %{{y}}<extra></extra>'
-                    ))
-                    
-                    if isinstance(threshold, (int, float)):
-                        fig.add_hline(y=threshold, line_dash="dash", annotation_text=f"Soglia picchi: {threshold:.2f}", line_color="orange")
-                
-                fig.update_layout(showlegend=True, hovermode='x unified')
+            # Debug: mostra sempre i dati finali
+            st.write("**Dati finali per il grafico:**")
+            st.dataframe(df_final[[x_col_final, y_col_final]])
             
-            elif chart_type == 'torta':
-                if not y_col or y_col == '':
-                    counts = df[x_col].value_counts().head(10)
-                    fig = px.pie(values=counts.values, names=counts.index, title=f"Distribuzione di {x_col}")
-                else:
-                    if df[x_col].dtype == 'object':
-                        agg_df = df.groupby(x_col)[y_col].sum().reset_index().head(10)
-                        fig = px.pie(agg_df, values=y_col, names=x_col, title=f"Distribuzione di {y_col} per {x_col}")
-            
-            elif chart_type == 'heatmap':
-                if df[x_col].dtype in ['int64', 'float64'] and df[y_col].dtype in ['int64', 'float64']:
-                    corr_df = df[[x_col, y_col]].corr()
-                    fig = px.imshow(corr_df, title=f"Correlazione tra {x_col} e {y_col}")
-                else:
-                    crosstab = pd.crosstab(df[y_col], df[x_col])
-                    if crosstab.size > 400:
-                        crosstab = crosstab.iloc[:20, :20]
-                    fig = px.imshow(crosstab, title=f"Heatmap: {y_col} vs {x_col}")
+            # ========== CREAZIONE GRAFICO CON DATI UNIFICATI ==========
+            fig = self._create_chart_by_type(df_final, chart_type, x_col_final, y_col_final, 
+                                        x_col, is_temporal_discrete)
             
             if fig:
-                fig.update_layout(height=500, template='plotly_white', margin=dict(t=60, b=60, l=60, r=60))
+                fig.update_layout(height=500, template='plotly_white', 
+                                margin=dict(t=60, b=60, l=60, r=60))
             
             return fig
             
         except Exception as e:
             st.error(f"Errore nella creazione del grafico {chart_type}: {e}")
             return None
+
+    def _prepare_chart_data(self, df: pd.DataFrame, x_col: str, y_col: str, chart_type: str) -> Optional[Dict]:
+        """Prepara i dati in modo centralizzato per tutti i tipi di grafico."""
+        
+        # ========== FASE 1: PULIZIA BASE ==========
+        df_clean = df.copy()
+        
+        # Rimuovi righe con x_col nullo/NaN
+        df_clean = df_clean.dropna(subset=[x_col])
+        df_clean = df_clean[df_clean[x_col].notna()]
+        
+        if df_clean.empty:
+            return None
+        
+        # ========== FASE 2: GESTIONE DATI TEMPORALI ==========
+        is_temporal = pd.api.types.is_datetime64_any_dtype(df_clean[x_col])
+        is_temporal_discrete = False
+        
+        if is_temporal and chart_type != 'serie temporale con picchi':
+            st.info("Rilevata serie temporale, dati aggregati per giorno.")
+            
+            # Pulizia rigorosa delle date
+            df_clean = df_clean[pd.to_datetime(df_clean[x_col], errors='coerce').notna()]
+            df_clean[x_col] = pd.to_datetime(df_clean[x_col])
+            
+            if df_clean.empty:
+                return None
+            
+            # Crea colonna data giornaliera
+            df_clean['date_only'] = df_clean[x_col].dt.date
+            
+            # ========== AGGREGAZIONE UNIFICATA ==========
+            if not y_col or y_col == '':
+                # Caso 1: Solo conteggio delle occorrenze per data
+                agg_df = df_clean.groupby('date_only').size().reset_index(name='Conteggio')
+                y_col_final = 'Conteggio'
+                
+            elif pd.api.types.is_numeric_dtype(df_clean[y_col]):
+                # Caso 2: Somma dei valori numerici per data
+                df_clean = df_clean.dropna(subset=[y_col])
+                agg_df = df_clean.groupby('date_only')[y_col].sum().reset_index()
+                y_col_final = y_col
+                
+            else:
+                # Caso 3: Conteggio per valori non numerici
+                agg_df = df_clean.groupby('date_only').size().reset_index(name=f'Conteggio_{y_col}')
+                y_col_final = f'Conteggio_{y_col}'
+            
+            # Converti date_only back a datetime
+            agg_df['date_datetime'] = pd.to_datetime(agg_df['date_only'])
+            
+            # FILTRO CRITICO: Rimuovi valori nulli e zero
+            agg_df = agg_df.dropna(subset=[y_col_final])
+            agg_df = agg_df[agg_df[y_col_final] > 0]
+            
+            if agg_df.empty:
+                return None
+            
+            # Crea colonna data come stringa per evitare spazi vuoti nei grafici
+            agg_df['date_str'] = agg_df['date_datetime'].dt.strftime('%Y-%m-%d')
+            
+            df_final = agg_df.sort_values('date_datetime')[['date_str', y_col_final]].reset_index(drop=True)
+            x_col_final = 'date_str'
+            is_temporal_discrete = True
+            
+        else:
+            # ========== GESTIONE DATI NON TEMPORALI ==========
+            
+            if not y_col or y_col == '':
+                # Caso 1: Distribuzione di una sola variabile
+                if df_clean[x_col].dtype == 'object':
+                    # Variabile categorica: conta le occorrenze
+                    counts = df_clean[x_col].value_counts().head(20)
+                    counts = counts.dropna()
+                    df_final = pd.DataFrame({
+                        x_col: counts.index,
+                        'Conteggio': counts.values
+                    }).reset_index(drop=True)
+                    x_col_final = x_col
+                    y_col_final = 'Conteggio'
+                else:
+                    # Variabile numerica: usa i valori originali (limitati)
+                    df_final = df_clean[[x_col]].head(100).reset_index(drop=True)
+                    df_final['Valore'] = 1  # Per grafici che richiedono y
+                    x_col_final = x_col
+                    y_col_final = 'Valore'
+                    
+            else:
+                # Caso 2: Relazione tra due variabili
+                df_clean = df_clean.dropna(subset=[y_col])
+                
+                if df_clean[x_col].dtype == 'object' and pd.api.types.is_numeric_dtype(df_clean[y_col]):
+                    # x categorica, y numerica: aggrega per categoria
+                    agg_df = df_clean.groupby(x_col)[y_col].sum().reset_index()
+                    agg_df = agg_df.sort_values(x_col, ascending=True).head(20)
+                    df_final = agg_df.reset_index(drop=True)
+                    x_col_final = x_col
+                    y_col_final = y_col
+                    
+                else:
+                    # Altri casi: usa i dati originali (limitati)
+                    df_final = df_clean[[x_col, y_col]].head(500).reset_index(drop=True)
+                    x_col_final = x_col
+                    y_col_final = y_col
+        
+        return {
+            'df': df_final,
+            'x_col': x_col_final,
+            'y_col': y_col_final,
+            'is_temporal_discrete': is_temporal_discrete
+        }
+
+    def _create_chart_by_type(self, df: pd.DataFrame, chart_type: str, x_col: str, y_col: str, 
+                            original_x_col: str, is_temporal_discrete: bool) -> Optional[go.Figure]:
+        """Crea il grafico specifico usando dati già preparati e unificati."""
+        
+        fig = None
+        
+        if chart_type == 'barre':
+            fig = go.Figure(data=[
+                go.Bar(x=df[x_col], y=df[y_col], marker_color=self.CHART_COLOR, width=0.5 if len(x_col) < 5 else 1)
+            ])
+            fig.update_layout(
+                title_text=f"Grafico a Barre - {y_col} per {original_x_col}",
+                xaxis_title=original_x_col,
+                yaxis_title=y_col
+            )
+            fig.update_xaxes(tickangle=0 if len(x_col) < 10 else 30, type='category')
+
+            # fig = px.bar(df, x=x_col, y=y_col, 
+            #             title=f"Grafico a Barre - {y_col} per {original_x_col}")
+            # if is_temporal_discrete:
+            #     fig.update_xaxes(title=original_x_col, tickangle=45, type='category')
+        
+        elif chart_type == 'linee':
+            # fig = px.line(df, x=x_col, y=y_col, markers=True,
+            #             title=f"Grafico a Linee - {y_col} rispetto a {original_x_col}")
+            # if is_temporal_discrete:
+            #     fig.update_xaxes(title=original_x_col, tickangle=45, type='category')
+            fig = go.Figure(data=[
+                go.Scatter(x=df[x_col], y=df[y_col], marker_color=self.CHART_COLOR, mode='lines+markers')
+            ])
+            fig.update_layout(
+                title_text=f"Grafico a Linee - {y_col} rispetto a {original_x_col}",
+                xaxis_title=original_x_col,
+                yaxis_title=y_col
+            )
+            fig.update_xaxes(tickangle=0 if len(x_col) < 10 else 30, type='category')
+        
+        elif chart_type == 'serie temporale con picchi':
+            # ECCEZIONE: per i picchi usa sempre i dati originali non aggregati
+            # Questo richiede un handling speciale
+            st.warning("Serie temporale con picchi richiede dati originali - implementazione speciale necessaria")
+            return None
+        
+        elif chart_type == 'torta':
+            # Prendi i top 10 valori per la torta
+            # df_pie = df.nlargest(10, y_col) if len(df) > 10 else df
+            # fig = px.pie(df_pie, values=y_col, names=x_col,
+            #             title=f"Distribuzione - Top {len(df_pie)} {original_x_col}")
+            df_pie = df.nlargest(10, y_col) if len(df) > 10 else df
+            fig = go.Figure(data=[
+                go.Pie(
+                    labels=df_pie[x_col], 
+                    values=df_pie[y_col],
+                    marker_colors=px.colors.qualitative.Set3 
+                )
+            ])
+            fig.update_layout(title_text=f"Distribuzione - Top {len(df_pie)} {original_x_col}")
+        
+        elif chart_type == 'heatmap':
+            if is_temporal_discrete:
+                st.warning("Heatmap per dati temporali aggregati non implementata")
+                return None
+            else:
+                crosstab = pd.crosstab(df[y_col], df[x_col])
+                fig = go.Figure(data=go.Heatmap(
+                    z=crosstab.values,
+                    x=crosstab.columns,
+                    y=crosstab.index,
+                    colorscale='Viridis' # Scegli una palette di colori
+                ))
+                fig.update_layout(
+                    title_text=f"Heatmap: {y_col} vs {x_col}",
+                    xaxis_title=x_col,
+                    yaxis_title=y_col
+                )
+            # if is_temporal_discrete:
+            #     st.warning("Heatmap per dati temporali aggregati non implementata - richiede logica speciale")
+            #     return None
+            # else:
+            #     # Per heatmap, verifica se possiamo creare una matrice
+            #     if len(df[x_col].unique()) <= 50 and len(df[y_col].unique()) <= 50:
+            #         # Crea crosstab se i dati sono categorici o limitati
+            #         if df[x_col].dtype == 'object' or df[y_col].dtype == 'object':
+            #             crosstab = pd.crosstab(df[y_col], df[x_col])
+            #             fig = px.imshow(crosstab, title=f"Heatmap: {y_col} vs {x_col}")
+            #         else:
+            #             # Correlazione per dati numerici
+            #             corr_df = df[[x_col, y_col]].corr()
+            #             fig = px.imshow(corr_df, title=f"Correlazione tra {x_col} e {y_col}")
+            #     else:
+            #         st.warning("Troppi valori unici per creare una heatmap significativa")
+            #         return None
+        return fig
     
     def display_charts_from_config(self, df: pd.DataFrame, charts_config: List[Dict[str, Any]]):
         """Visualizza tutti i grafici dalla configurazione JSON."""
@@ -277,8 +425,6 @@ class ChartVisualizer:
                     fig = self.create_chart(df, chart_config)
                     if fig:
                         st.plotly_chart(fig, use_container_width=True)
-                        with st.expander("ℹ️ Info Grafico"):
-                            st.json(chart_config)
 
 ### 3. CLASSE PER MACHINE LEARNING
 # ==============================================================================
@@ -636,11 +782,19 @@ class MLVisualizer:
         if not ml_results:
             st.info("Nessun algoritmo ML configurato")
             return
-        
+
+        st.divider()
         st.markdown("### 🤖 Risultati Machine Learning")
-        for result, config in zip(ml_results, ml_configs):
-            algorithm = config.get('algorithm', 'N/A')
-            with st.expander(f"🧠 {algorithm}", expanded=True):
+
+        # Crea una tab per ogni configurazione
+        tab_names = [cfg.get('algorithm', 'Sconosciuto') for cfg in ml_configs]
+        tabs = st.tabs(tab_names)
+
+        # Mostra i risultati dentro ogni tab
+        for tab, result, config in zip(tabs, ml_results, ml_configs):
+            with tab:
+                algorithm = config.get('algorithm', 'N/A')
+
                 if algorithm in ['K-Means', 'DBSCAN']:
                     self.visualize_clustering_results(result, config.get('features', []))
                 elif algorithm in ['Random Forest', 'XGBoost', 'Linear Regression', 'Logistic Regression', 'SVM']:
@@ -648,7 +802,7 @@ class MLVisualizer:
                 elif algorithm == 'PCA':
                     self.visualize_pca_results(result)
                 elif 'error' in result:
-                     st.error(result['error'])
+                    st.error(result['error'])
 
 
 ### 5. FUNZIONI DI SUPPORTO
@@ -781,7 +935,7 @@ def show_analytics_page():
     predefined_ml = find_predefined_config(query_text, 'ml_algorithms')
     
     if predefined_charts or predefined_ml:
-        st.markdown("## 🎯 Analisi Predefinite")
+        st.markdown("### 🎯 Analisi Predefinite")
         if predefined_charts:
             ChartVisualizer().display_charts_from_config(dataset, predefined_charts)
         if predefined_ml:
