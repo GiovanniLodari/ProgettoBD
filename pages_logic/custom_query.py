@@ -803,27 +803,26 @@ def show_save_template_sidebar(query_text: str, mode: str = 'new', existing_data
             st.session_state.ml_config.append({
                 "algorithm": "K-Means", 
                 "features": [], 
-                "target": None,
-                "params": {}
+                "target": None
             })
             st.rerun()
 
         ml_algorithms = {
             # Clustering
-            "K-Means": {"type": "clustering", "params": []},
-            "DBSCAN": {"type": "clustering", "params": []},
+            "K-Means": {"type": "clustering"},
+            "DBSCAN": {"type": "clustering"},
             
             # Supervisionati
-            "Random Forest": {"type": "supervised", "params": []},
-            "XGBoost": {"type": "supervised", "params": []},
-            "Linear Regression": {"type": "supervised", "params": []},
-            "Logistic Regression": {"type": "supervised", "params": []},
-            "SVM": {"type": "supervised", "params": []},
+            "Random Forest": {"type": "supervised"},
+            "XGBoost": {"type": "supervised"},
+            "Linear Regression": {"type": "supervised"},
+            "Logistic Regression": {"type": "supervised"},
+            "SVM": {"type": "supervised"},
 
             # Anomaly Detection
-            "Isolation Forest": {"type": "anomaly", "params": []},
-            "STL Decomposition": {"type": "anomaly", "params": []},
-            "Prophet": {"type": "anomaly", "params": []}
+            "Isolation Forest": {"type": "anomaly"},
+            "STL Decomposition": {"type": "anomaly"},
+            "Prophet": {"type": "anomaly"}
         }
         
         # Visualizza tutti gli algoritmi ML configurati
@@ -882,28 +881,6 @@ def show_save_template_sidebar(query_text: str, mode: str = 'new', existing_data
                             ml_cfg["target"] = new_target if new_target != "" else None
                         else:
                             ml_cfg["target"] = None
-
-                        # Parametri algoritmo (solo PCA)
-                        if algorithm_info["params"]:
-                            if "params" not in ml_cfg:
-                                ml_cfg["params"] = {}
-
-                            for param in algorithm_info["params"]:
-                                if param == "n_components":
-                                    max_components = len(ml_cfg.get("features", [])) if ml_cfg.get("features") else 10
-                                    if max_components == 0:
-                                        max_components = 2
-                                    default_val = ml_cfg["params"].get(param, min(2, max_components))
-                                    new_param_val = st.number_input(
-                                        f"N. componenti:",
-                                        min_value=1,
-                                        max_value=max_components,
-                                        value=int(default_val),
-                                        key=f"sidebar_ml_param_{param}_{i}"
-                                    )
-                                    ml_cfg["params"][param] = new_param_val
-                        else:
-                            ml_cfg["params"] = {}
                     else:
                         st.warning("⚠️ Impossibile determinare le colonne dalla query.")
                     
