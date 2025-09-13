@@ -111,7 +111,10 @@ class ChartVisualizer:
         
         elif chart_type == 'torta':
             if not x_col or x_col not in df_columns:
-                return False, f"Colonna etichette '{x_col}' non trovata"
+                return False, f"Colonna etichetta '{x_col}' non trovata"
+            if y_col:
+                if not y_col in df_columns:
+                    return False, f"Colonna etichetta '{y_col}' non trovata"
         
         return True, ""
     
@@ -215,15 +218,15 @@ class ChartVisualizer:
             x_col_final = x_col
         else:
             if not y_col:
-                counts = df_clean[x_col].value_counts().head(20)
+                counts = df_clean[x_col].value_counts()
                 df_final = pd.DataFrame({x_col: counts.index, 'Conteggio': counts.values})
                 x_col_final, y_col_final = x_col, 'Conteggio'
             else:
                 df_clean = df_clean.dropna(subset=[y_col])
                 if df_clean[x_col].dtype == 'object' and pd.api.types.is_numeric_dtype(df_clean[y_col]):
-                    df_final = df_clean.groupby(x_col)[y_col].sum().reset_index().head(20)
+                    df_final = df_clean.groupby(x_col)[y_col].sum().reset_index()
                 else:
-                    df_final = df_clean[[x_col, y_col]].head(500)
+                    df_final = df_clean[[x_col, y_col]]#.head(500)
                 x_col_final, y_col_final = x_col, y_col
         
         return {'df': df_final, 'x_col': x_col_final, 'y_col': y_col_final}
@@ -233,31 +236,116 @@ class ChartVisualizer:
         """Crea il grafico specifico usando dati già preparati e unificati."""
         fig = None
         
+        n_unique_x = df[x_col].nunique()
+        needs_scrolling = n_unique_x > 20
+
+        MAX_DATAPOINTS_FOR_CHART = 500
+        
         if chart_type == 'barre':
+            if len(df) > MAX_DATAPOINTS_FOR_CHART:
+                df_for_chart = df.sort_values(by=y_col, ascending=False)
+                df = df_for_chart.head(MAX_DATAPOINTS_FOR_CHART)
             fig = px.bar(df, x=x_col, y=y_col, title=f"Grafico a Barre - {y_col} per {original_x_col}")
             fig.update_traces(width=0.6)
             fig.update_xaxes(title=original_x_col, type='category')
+            
+            if needs_scrolling:
+                fig.update_layout(
+                    xaxis=dict(
+                        rangeslider=dict(visible=True),
+                        type="category",
+                        title=original_x_col
+                    ),
+                    height=600,
+                    title=f"Grafico a Barre - {y_col} per {original_x_col}<br><sub>📊 {n_unique_x} categorie - Usa il cursore per navigare</sub>"
+                )
+                if n_unique_x > 50:
+                    fig.update_xaxes(range=[-0.5, 19.5])
         
         elif chart_type == 'linee':
+            if len(df) > MAX_DATAPOINTS_FOR_CHART:
+                df_for_chart = df.sort_values(by=x_col, ascending=False)
+                df = df_for_chart.head(MAX_DATAPOINTS_FOR_CHART)
             fig = px.line(df, x=x_col, y=y_col, markers=True, title=f"Grafico a Linee - {y_col} rispetto a {original_x_col}")
             fig.update_xaxes(title=original_x_col, type='category')
+            
+            if needs_scrolling:
+                fig.update_layout(
+                    xaxis=dict(
+                        rangeslider=dict(visible=True),
+                        type="category",
+                        title=original_x_col
+                    ),
+                    height=600,
+                    title=f"Grafico a Linee - {y_col} rispetto a {original_x_col}<br><sub>📈 {n_unique_x} punti dati - Usa il cursore per navigare</sub>"
+                )
+                if n_unique_x > 50:
+                    fig.update_xaxes(range=[-0.5, 19.5])
         
         elif chart_type == 'serie temporale con picchi':
             st.warning("Serie temporale con picchi richiede dati originali - implementazione speciale necessaria.")
             return None
         
         elif chart_type == 'torta':
-            df_pie = df.nlargest(10, y_col) if len(df) > 10 else df
-            fig = px.pie(df_pie, values=y_col, names=x_col, title=f"Distribuzione - Top {len(df_pie)} {original_x_col}")
+            if y_col is None or y_col == '':
+                value_counts = df[x_col].value_counts()#.head(10)
+                df_pie = pd.DataFrame({
+                    'categories': value_counts.index,
+                    'counts': value_counts.values
+                })
+                fig = px.pie(df_pie, values='counts', names='categories', 
+                        title=f"Distribuzione per {original_x_col} (Conteggio)")
+            else:
+                df_agg = df.groupby(x_col)[y_col].sum().reset_index()
+                df_pie = df_agg.nlargest(10, y_col) if len(df_agg) > 10 else df_agg
+                fig = px.pie(df_pie, values=y_col, names=x_col, 
+                        title=f"Distribuzione - {y_col} per {original_x_col}")
         
         elif chart_type == 'heatmap':
             if len(df[x_col].unique()) <= 50 and len(df[y_col].unique()) <= 50:
                 crosstab = pd.crosstab(df[y_col], df[x_col])
-                fig = px.imshow(crosstab, title=f"Heatmap: {y_col} vs {x_col}")
+                fig = px.imshow(
+                    crosstab, 
+                    title=f"Heatmap: {y_col} vs {x_col}",
+                    color_continuous_scale='Plasma'
+                    )
             else:
-                st.warning("Troppi valori unici per creare una heatmap significativa.")
-                return None
-        
+                fig = px.density_heatmap(
+                    df,
+                    x=x_col,
+                    y=y_col,
+                    title=f"Density Heatmap: {y_col} vs {x_col}",
+                    nbinsx=50,
+                    nbinsy=50,
+                    color_continuous_scale='Plasma'
+                )
+
+        if fig:
+            fig.update_layout(
+                dragmode='pan',
+                showlegend=True
+            )
+            
+            config = {
+                'displayModeBar': True,
+                'displaylogo': False,
+                'modeBarButtonsToAdd': ['pan2d', 'select2d', 'lasso2d'],
+                'modeBarButtonsToRemove': ['autoScale2d'],
+                'scrollZoom': True,
+                'doubleClick': 'reset'
+            }
+            fig.update_layout(
+                annotations=[
+                    dict(
+                        showarrow=False,
+                        xref="paper", yref="paper",
+                        x=0.5, y=-0.1,
+                        xanchor='center', yanchor='top',
+                        font=dict(size=10, color="gray")
+                    )
+                ] if needs_scrolling else []
+            )
+
         return fig
     
     def display_charts_from_config(self, df: pd.DataFrame, charts_config: List[Dict[str, Any]]):
@@ -319,14 +407,20 @@ class MLProcessor:
         
         alg_req = self.get_algorithm_requirements()[algorithm]
         
+        # Validazione speciale per algoritmi di serie temporali
         if algorithm in ['STL Decomposition', 'Prophet']:
             if not self._find_datetime_columns() and not features:
                 return False, f"{algorithm} richiede almeno una colonna datetime"
         elif len(features) < alg_req['min_features']:
             return False, f"{algorithm} richiede almeno {alg_req['min_features']} feature(s)"
         
-        if alg_req['requires_target'] and (not target or target not in self.df.columns):
-            return False, f"Target '{target}' richiesto e non trovato per {algorithm}"
+        # Validazione del target per algoritmi supervisionati
+        if alg_req['requires_target']:
+            if not target or target not in self.df.columns:
+                return False, f"Target '{target}' richiesto e non trovato per {algorithm}"
+            # Verifica che il target non sia incluso nelle features
+            if target in features:
+                return False, f"La colonna target '{target}' non può essere inclusa nelle features"
         
         return True, ""
 
@@ -383,11 +477,11 @@ class MLProcessor:
     def _optimize_hyperparameters(self, algorithm: str, X: np.ndarray, y: Optional[np.ndarray] = None, is_classification: bool = True) -> Tuple[Any, Dict[str, Any]]:
         """Ottimizza gli iperparametri usando Grid Search."""
         param_grids = {
-            'K-Means': {'n_clusters': [3, 4, 5, 6]},
-            'DBSCAN': {'eps': [0.3, 0.5, 0.7], 'min_samples': [5, 10]},
-            'Random Forest': {'n_estimators': [100, 200], 'max_depth': [5, 10, None]},
-            'XGBoost': {'n_estimators': [100, 200], 'max_depth': [3, 5], 'learning_rate': [0.01, 0.1]},
-            'SVM': {'C': [0.1, 1, 10], 'kernel': ['rbf', 'linear']},
+            'K-Means': {'n_clusters': [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]},
+            'DBSCAN': {'eps': [0.3, 0.5, 0.7, 1], 'min_samples': [5, 10]},
+            'Random Forest': {'n_estimators': [50, 100, 200], 'max_depth': [5, 10, None]},
+            'XGBoost': {'n_estimators': [50, 100, 200], 'max_depth': [3, 5], 'learning_rate': [0.01, 0.1]},
+            'SVM': {'C': [0.1, 1, 10], 'kernel': ['linear', 'poly', 'rbf']}
         }
         model_map = {
             'K-Means': KMeans, 'DBSCAN': DBSCAN, 'Random Forest': RandomForestClassifier if is_classification else RandomForestRegressor,
@@ -563,7 +657,10 @@ class MLProcessor:
         }
     
     def execute_ml_config(self, ml_config: Dict[str, Any]) -> Dict[str, Any]:
-        """Esegue una configurazione ML completa con ottimizzazione automatica."""
+        """
+        Esegue una configurazione ML completa con ottimizzazione automatica.
+        Ora gestisce automaticamente le features per algoritmi supervisionati.
+        """
         is_valid, error_msg = self.validate_ml_config(ml_config)
         if not is_valid: return {'error': error_msg, 'success': False}
         
@@ -572,7 +669,23 @@ class MLProcessor:
         target = ml_config.get('target')
         
         try:
-            alg_type = self.get_algorithm_requirements()[algorithm]['type']
+            alg_req = self.get_algorithm_requirements()[algorithm]
+            alg_type = alg_req['type']
+            
+            # Per algoritmi supervisionati, se features non sono specificate,
+            # usa tutte le colonne tranne il target
+            if alg_type == 'supervised' and target:
+                if not features:
+                    # Seleziona automaticamente tutte le colonne numeriche e categoriche, escluso il target
+                    available_features = [col for col in self.df.columns 
+                                        if col != target and 
+                                        (self.df[col].dtype in ['int64', 'float64', 'object', 'category'] or 
+                                         pd.api.types.is_numeric_dtype(self.df[col]))]
+                    features = available_features
+                    ml_config['features'] = features  # Aggiorna la configurazione
+                
+                if not features:
+                    return {'error': f"Nessuna feature valida trovata per {algorithm}", 'success': False}
             
             if alg_type == 'anomaly':
                 return self.run_anomaly_detection_optimized(algorithm, features)
@@ -599,6 +712,123 @@ class MLVisualizer:
     
     def __init__(self, ml_processor: MLProcessor):
         self.ml_processor = ml_processor
+    
+    def _prepare_chart_data(self, df: pd.DataFrame, chart_config: Dict[str, Any]) -> Tuple[pd.DataFrame, str, str, str]:
+        """
+        Prepara i dati per la visualizzazione dei grafici gestendo configurazioni multiple per X.
+        
+        Returns:
+            Tuple[pd.DataFrame, str, str, str]: (dataframe_preparato, colonna_x_effettiva, colonna_y, nome_originale_x)
+        """
+        x_config = chart_config.get('x')
+        y_col = chart_config.get('y')
+        chart_type = chart_config.get('type', '')
+        
+        # Gestione X multi-colonna per grafici a barre e linee
+        if isinstance(x_config, list) and len(x_config) > 1 and chart_type in ['barre', 'linee']:
+            # Crea una colonna combinata concatenando i valori
+            combined_col_name = 'combined_x_axis'
+            df_prepared = df.copy()
+            
+            # Concatena i valori delle colonne X con un separatore
+            combined_values = df_prepared[x_config[0]].astype(str)
+            for col in x_config[1:]:
+                combined_values = combined_values + ' - ' + df_prepared[col].astype(str)
+            
+            df_prepared[combined_col_name] = combined_values
+            original_x_name = ' e '.join(x_config)
+            
+            return df_prepared, combined_col_name, y_col, original_x_name
+        
+        # Gestione standard (X singola)
+        elif isinstance(x_config, list) and len(x_config) == 1:
+            x_col = x_config[0]
+        else:
+            x_col = x_config if isinstance(x_config, str) else x_config[0] if x_config else None
+        
+        if not x_col:
+            raise ValueError("Configurazione X non valida")
+        
+        return df.copy(), x_col, y_col, x_col
+    
+    def _create_chart_by_type(self, df: pd.DataFrame, chart_type: str, x_col: str, y_col: str, 
+                            original_x_col: str) -> Optional[go.Figure]:
+        """Crea il grafico specifico usando dati già preparati e unificati."""
+        fig = None
+        
+        if chart_type == 'barre':
+            fig = px.bar(df, x=x_col, y=y_col, title=f"Grafico a Barre - {y_col} per {original_x_col}")
+            fig.update_traces(width=0.6)
+            fig.update_xaxes(title=original_x_col, type='category')
+        
+        elif chart_type == 'linee':
+            fig = px.line(df, x=x_col, y=y_col, markers=True, title=f"Grafico a Linee - {y_col} rispetto a {original_x_col}")
+            fig.update_xaxes(title=original_x_col, type='category')
+        
+        elif chart_type == 'serie temporale con picchi':
+            st.warning("Serie temporale con picchi richiede dati originali - implementazione speciale necessaria.")
+            return None
+        
+        elif chart_type == 'torta':
+            # Gestione speciale per grafici a torta
+            if y_col is None or y_col == '':
+                # Modalità conteggio: conta le occorrenze di ogni categoria
+                value_counts = df[x_col].value_counts()#.head(10)
+                df_pie = pd.DataFrame({
+                    'categories': value_counts.index,
+                    'counts': value_counts.values
+                })
+                fig = px.pie(df_pie, values='counts', names='categories', 
+                           title=f"Distribuzione per {original_x_col} (Conteggio)")
+            else:
+                # Modalità aggregazione: somma i valori per categoria
+                df_agg = df.groupby(x_col)[y_col].sum().reset_index()
+                df_pie = df_agg.nlargest(10, y_col) if len(df_agg) > 10 else df_agg
+                fig = px.pie(df_pie, values=y_col, names=x_col, 
+                           title=f"Distribuzione - {y_col} per {original_x_col}")
+        
+        elif chart_type == 'heatmap':
+            if len(df[x_col].unique()) <= 50 and len(df[y_col].unique()) <= 50:
+                crosstab = pd.crosstab(df[y_col], df[x_col])
+                fig = px.imshow(
+                    crosstab, 
+                    title=f"Heatmap: {y_col} vs {x_col}",
+                    color_continuous_scale='Plasma'
+                    )
+            else:
+                st.info("Dato l'elevato numero di valori unici, è stato generato un Density Heatmap per visualizzare la densità dei punti.")
+                fig = px.density_heatmap(
+                    df,
+                    x=x_col,
+                    y=y_col,
+                    title=f"Density Heatmap: {y_col} vs {x_col}",
+                    nbinsx=50,
+                    nbinsy=50,
+                    color_continuous_scale='Plasma'
+                )
+
+        return fig
+    
+    def visualize_chart(self, df: pd.DataFrame, chart_config: Dict[str, Any]) -> None:
+        """
+        Visualizza un grafico utilizzando la configurazione fornita.
+        Gestisce automaticamente configurazioni X multiple e modalità diverse per grafici a torta.
+        """
+        try:
+            # Prepara i dati gestendo le configurazioni multiple
+            df_prepared, x_col_effective, y_col, original_x_name = self._prepare_chart_data(df, chart_config)
+            
+            # Crea il grafico
+            chart_type = chart_config.get('type', '')
+            fig = self._create_chart_by_type(df_prepared, chart_type, x_col_effective, y_col, original_x_name)
+            
+            if fig:
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.error("Impossibile creare il grafico con la configurazione fornita.")
+                
+        except Exception as e:
+            st.error(f"Errore nella visualizzazione del grafico: {e}")
     
     def visualize_results(self, results: Dict[str, Any], config: Dict[str, Any]):
         """Visualizza i risultati ML con una logica unificata."""
@@ -630,10 +860,27 @@ class MLVisualizer:
         
         features = config.get('features', [])
         if len(features) >= 2 and 'labels' in results:
-            df_clean = self.ml_processor.df[features].dropna()
+            original_df = self.ml_processor.df.copy()
+            df_clean = original_df[features].dropna()            
             if len(df_clean) == len(results['labels']):
-                df_plot = pd.DataFrame({features[0]: df_clean.iloc[:, 0], features[1]: df_clean.iloc[:, 1], 'Cluster': results['labels']})
-                fig = px.scatter(df_plot, x=features[0], y=features[1], color='Cluster', title=f"Visualizzazione Cluster {results['algorithm']}")
+                df_plot = df_clean.copy()
+                df_plot['Cluster'] = results['labels']
+
+                hover_col = next((col for col in original_df.columns if col not in features and original_df[col].dtype == 'object'), None)
+                
+                if hover_col:
+                    df_plot[hover_col] = original_df.loc[df_clean.index, hover_col]
+                df_plot['Cluster'] = df_plot['Cluster'].astype(str)
+
+                fig = px.scatter(
+                    df_plot, 
+                    x=features[0], 
+                    y=features[1], 
+                    color='Cluster', 
+                    title=f"Visualizzazione Cluster {results['algorithm']}",
+                    hover_name=hover_col,
+                    color_discrete_sequence=px.colors.qualitative.Vivid
+                )
                 st.plotly_chart(fig, use_container_width=True)
     
     def _visualize_supervised(self, results: Dict):
@@ -715,13 +962,37 @@ class MLVisualizer:
                 # Chiama la funzione di visualizzazione unificata per ogni risultato
                 self.visualize_results(result, config)
 
+    def display_chart_results(self, chart_results: List[Dict[str, Any]], chart_configs: List[Dict[str, Any]], df: pd.DataFrame):
+        """
+        Visualizza tutti i grafici configurati utilizzando la nuova logica di gestione.
+        """
+        if not chart_results or not chart_configs:
+            st.info("Nessun grafico configurato")
+            return
+
+        st.divider()
+        st.markdown("### 📊 Grafici Configurati")
+
+        # Crea tab per ogni grafico
+        tab_names = [f"{cfg.get('type', 'Grafico').title()} - {cfg.get('title', 'Senza Titolo')}" 
+                    for cfg in chart_configs]
+        tabs = st.tabs(tab_names)
+
+        for tab, chart_config in zip(tabs, chart_configs):
+            with tab:
+                try:
+                    # Utilizza il metodo di visualizzazione unificato
+                    self.visualize_chart(df, chart_config)
+                except Exception as e:
+                    st.error(f"Errore nella visualizzazione del grafico: {e}")
+
 ### 5. FUNZIONI DI SUPPORTO
 # ==============================================================================
 def normalize_query_for_comparison(query: str) -> str:
     """Normalizza una query per il confronto."""
     if not query: return ""
     query = re.sub(r'--.*?$', '', query, flags=re.MULTILINE)
-    query = re.sub(r'\s+', ' ', query.strip())
+    query = re.sub(r'\s+', ' ', query.strip(), flags=re.MULTILINE)
     return query.lower()
 
 def find_predefined_config(query_text: str, config_key: str) -> List[Dict[str, Any]]:
@@ -785,6 +1056,87 @@ def display_suggested_charts(df: pd.DataFrame, suggestions: Dict[str, Dict[str, 
                 fig = px.pie(df, names=config['config']['names'], values=config['config']['values'], title=config['title'])
             st.plotly_chart(fig, use_container_width=True)
 
+def prepare_features_for_supervised_ml(df: pd.DataFrame, target_col: str) -> List[str]:
+    """
+    Prepara automaticamente la lista delle feature per algoritmi supervisionati.
+    Esclude il target e seleziona solo colonne appropriate.
+    
+    Args:
+        df: DataFrame con i dati
+        target_col: Nome della colonna target
+        
+    Returns:
+        List[str]: Lista delle colonne da usare come features
+    """
+    # Esclude il target e seleziona solo colonne numeriche o categoriche appropriate
+    feature_candidates = []
+    
+    for col in df.columns:
+        if col == target_col:
+            continue
+            
+        # Includi colonne numeriche
+        if pd.api.types.is_numeric_dtype(df[col]):
+            feature_candidates.append(col)
+        # Includi colonne categoriche con un numero ragionevole di categorie
+        elif df[col].dtype in ['object', 'category']:
+            n_unique = df[col].nunique()
+            if 1 < n_unique < min(50, len(df) * 0.5):  # Evita colonne troppo sparse
+                feature_candidates.append(col)
+    
+    return feature_candidates
+
+def validate_chart_config(chart_config: Dict[str, Any], df: pd.DataFrame) -> Tuple[bool, str]:
+    """
+    Valida una configurazione di grafico rispetto al DataFrame disponibile.
+    
+    Args:
+        chart_config: Configurazione del grafico
+        df: DataFrame con i dati
+        
+    Returns:
+        Tuple[bool, str]: (is_valid, error_message)
+    """
+    chart_type = chart_config.get('type', '')
+    x_config = chart_config.get('x')
+    y_config = chart_config.get('y')
+    
+    # Validazione del tipo di grafico
+    valid_types = ['barre', 'linee', 'torta', 'heatmap', 'serie temporale con picchi']
+    if chart_type not in valid_types:
+        return False, f"Tipo di grafico '{chart_type}' non supportato"
+    
+    # Validazione configurazione X
+    if not x_config:
+        return False, "Configurazione X mancante"
+    
+    if isinstance(x_config, list):
+        x_columns = x_config
+    else:
+        x_columns = [x_config]
+
+    for item in x_columns:
+        col_name = item[0] if isinstance(item, list) else item
+        
+        if col_name not in df.columns:
+            return False, f"Colonna '{col_name}' non trovata nel dataset"
+    
+    # Validazione configurazione Y per grafici che la richiedono
+    if chart_type in ['barre', 'linee', 'heatmap']:
+        if not y_config:
+            return False, f"Grafico '{chart_type}' richiede la specificazione dell'asse Y"
+        if y_config not in df.columns:
+            return False, f"Colonna Y '{y_config}' non trovata nel dataset"
+    
+    # Validazione specifica per grafici a torta
+    if chart_type == 'torta':
+        if len(x_columns) > 1:
+            return False, "I grafici a torta supportano solo una colonna per l'asse X"
+        if y_config and y_config not in df.columns:
+            return False, f"Colonna Y '{y_config}' non trovata nel dataset"
+    
+    return True, ""
+
 ### 6. FUNZIONE PRINCIPALE DELLA PAGINA
 # ==============================================================================
 
@@ -825,7 +1177,7 @@ def show_analytics_page():
             st.info(f"Analisi automatica suggerita: Aggregazione di **{agg_col}** per **{group_by_col}**.")
             result_df = GeneralAnalytics(dataset).perform_aggregation(group_by_col, agg_col, agg_type)
             if result_df is not None and not result_df.empty:
-                result_df = result_df.head(20)
+                #result_df = result_df.head(20)
                 st.dataframe(result_df, use_container_width=True)
                 suggestions = suggest_charts(result_df)
                 display_suggested_charts(result_df, suggestions)
@@ -842,8 +1194,11 @@ def show_analytics_page():
         if st.button("🚀 Genera Analisi", type="primary", use_container_width=True):
             result_df = GeneralAnalytics(dataset).perform_aggregation(group_by, agg_col, agg_type)
             if result_df is not None and not result_df.empty:
-                st.dataframe(result_df.head(20), use_container_width=True)
-                suggestions = suggest_charts(result_df.head(20))
-                display_suggested_charts(result_df.head(20), suggestions)
+                #st.dataframe(result_df.head(20), use_container_width=True)
+                st.dataframe(result_df, use_container_width=True)
+                #suggestions = suggest_charts(result_df.head(20))
+                suggestions = suggest_charts(result_df)
+                #display_suggested_charts(result_df.head(20), suggestions)
+                display_suggested_charts(result_df, suggestions)
             else:
                 st.error("Nessun risultato trovato.")

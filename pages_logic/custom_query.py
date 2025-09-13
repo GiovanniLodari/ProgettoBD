@@ -74,10 +74,10 @@ class EnhancedQueryEngine(QueryEngine):
 
             logger.info(f"Conteggio totale righe: {total_rows_count}")
             
-            if limit_results:
-                spark_df = spark_df.limit(limit_results)
-            else:
-                spark_df = spark_df.limit(RobustDataConverter.DEFAULT_MAX_ROWS)
+            # if limit_results:
+            #     spark_df = spark_df.limit(limit_results)
+            # else:
+            #     spark_df = spark_df.limit(RobustDataConverter.DEFAULT_MAX_ROWS)
             
             if self._is_empty_spark_df(spark_df):
                 result['warning'] = "Query eseguita ma nessun risultato restituito"
@@ -353,55 +353,91 @@ def show_simplified_editor_tab(query_engine, dataset):
     
     for category, queries in all_templates.items():
         with st.expander(f"**{category}**", expanded=False):
-            for name, query_data in queries.items():
+            num_queries = len(queries)
+            for i, (name, query_data) in enumerate(queries.items()):
                 
                 query_text = query_data.get('query', '# Errore: Query non trovata')
                 charts_config = query_data.get('charts', [])
+                ml_config = query_data.get('ml_algorithms', [])
 
                 st.markdown(f"##### {name}")
                 
-                col_query, col_charts, col_edit = st.columns([4, 2, 1])
+                col_query, col_charts, col_edit = st.columns([4, 3, 1])
                 
                 with col_query:
                     st.code(query_text, language="sql")
                 
                 # --- Colonna 2: Blocco con i grafici correlati ---
                 with col_charts:
-                    with st.container(border=True):
                         if charts_config:
-                            st.markdown("**📊 Grafici Predefiniti:**")
-                            for chart in charts_config:
-                                chart_type = chart.get('type', 'N/D')
-                                x_axis = chart.get('x', 'N/D')
-                                y_axis = chart.get('y', '')
-                                
-                                if chart_type != "Heatmap":
-                                    if y_axis:
-                                        st.markdown(
-                                            f"- Grafico a {chart_type}\n"
-                                            f"  - x: `{x_axis}`\n"
-                                            f"  - y: `{y_axis}`"
-                                        )
+                            with st.container(border=True):
+                                st.markdown("**📊 Grafici Predefiniti:**")
+                                for chart in charts_config:
+                                    chart_type = chart.get('type', 'N/D')
+                                    x_axis = chart.get('x', 'N/D')
+                                    y_axis = chart.get('y', '')
+                                    
+                                    if chart_type in ["Barre", "Linee"]:
+                                        if y_axis:
+                                            st.markdown(
+                                                f"- Grafico a {chart_type}\n"
+                                                f"  - x: `{x_axis}`\n"
+                                                f"  - y: `{y_axis}`"
+                                            )
+                                        else:
+                                            st.markdown(
+                                                f"Grafico a {chart_type}\n"
+                                                f"  - x: `{x_axis}`"
+                                            )
+                                    elif chart_type == "Heatmap":
+                                        if y_axis:
+                                            st.markdown(
+                                                f"- {chart_type}\n"
+                                                f"  - x: `{x_axis}`\n"
+                                                f"  - y: `{y_axis}`"
+                                            )
+                                        else:
+                                            st.markdown(
+                                                f"{chart_type}\n"
+                                                f"  - x: `{x_axis}`"
+                                            )
                                     else:
-                                        st.markdown(
-                                            f"Grafico a {chart_type}\n"
-                                            f"  - x: `{x_axis}`"
-                                        )
-                                else:
-                                    if y_axis:
-                                        st.markdown(
-                                            f"- {chart_type}\n"
-                                            f"  - x: `{x_axis}`\n"
-                                            f"  - y: `{y_axis}`"
-                                        )
-                                    else:
-                                        st.markdown(
-                                            f"{chart_type}\n"
-                                            f"  - x: `{x_axis}`"
-                                        )
+                                        if y_axis:
+                                            st.markdown(
+                                                f"- Grafico a {chart_type}\n"
+                                                f"  - Categoria: `{x_axis}`\n"
+                                                f"  - Valori: `{y_axis}`"
+                                            )
+                                        else:
+                                            st.markdown(
+                                                f"Grafico a {chart_type}\n"
+                                                f"  - Categoria: `{x_axis}`"
+                                            )
                         else:
                             st.info("Nessun grafico predefinito.")
-                    
+
+                        if ml_config:
+                            with st.container(border=True):
+                                st.markdown("**🤖 Algoritmi ML Predefiniti:**")
+                                for ml in ml_config:
+                                    alg_name = ml.get('algorithm', 'N/D')
+                                    features = ml.get('features', [])
+                                    target = ml.get('target')
+
+                                    display_text = f"- **{alg_name}**"
+                                    if target:
+                                        display_text += f"\n  - Target: `{target}`"                                    
+                                    else:
+                                        if features:
+                                            if len(features) < 5:
+                                                feature_display = ', '.join(f'`{f}`' for f in features)
+                                                display_text += f"\n  - Features: {feature_display}"
+                                            else:
+                                                display_text += f"\n  - Features: `{len(features)}`"
+                                        
+                                    st.markdown(display_text)
+                        else:
+                            st.info("Nessun algoritmo di ML predefinito.")
 
                 # --- Colonna 4: Pulsanti modifica/elimina ---
                 with col_edit:
@@ -419,7 +455,8 @@ def show_simplified_editor_tab(query_engine, dataset):
                             'category': category,
                             'name': name,
                             'query': query_text,
-                            'charts': charts_config
+                            'charts': charts_config,
+                            'ml_algorithms': ml_config
                         }
                         open_save_form(query_text, mode='edit', existing_data=edit_data)
                     
@@ -427,8 +464,8 @@ def show_simplified_editor_tab(query_engine, dataset):
                     if st.button("🗑️", key=f"delete_{category}_{name}", help="Elimina query", width="stretch"):
                         show_delete_confirmation_dialog(category, name)
                 
-                # Aggiungiamo un separatore visivo tra le query
-                st.markdown("---")
+                if i < num_queries - 1:
+                    st.markdown("---")
 
     
     st.markdown("### ✏️ Editor SQL")
@@ -508,11 +545,15 @@ def show_simplified_editor_tab(query_engine, dataset):
         result_data = st.session_state.last_query_result
         stats = st.session_state.last_query_stats
         query_text = st.session_state.last_query_text
+        total_rows = stats.get('total_rows')
 
         
         col1, col2, col3, col4 = st.columns(4)
+        label = "Righe Caricate / Totali"
+        value = f"{result_limit:,} / {total_rows:,}" if result_limit < total_rows else f"{total_rows:,} / {total_rows:,}"
         with col1:
-            st.metric("Righe Totali", f"{len(result_data):,}")
+            #st.metric("Righe Totali", f"{len(result_data):,}")
+            st.metric(label=label, value=value)
         with col2:
             st.metric("Colonne", len(result_data.columns))
         with col3:
@@ -530,14 +571,18 @@ def show_simplified_editor_tab(query_engine, dataset):
         
         with column2:
             if not show_all:
-                max_rows = min(10000, len(result_data))
-                display_limit = st.slider("Righe da mostrare:", 10, max_rows, 100, key="results_slider")
+                if limit_results:
+                    max_rows = min(result_limit, total_rows)
+                else:
+                    max_rows = min(10000, total_rows)
+
+                display_limit = st.slider("Righe da mostrare:", 10, max_rows, 100, key="reults_slider")
             else:
                 display_limit = len(result_data)
         with column3:
             search_term = st.text_input("🔍 Cerca nei risultati:", placeholder="Termine di ricerca...")
         
-        display_data = result_data.copy()
+        display_data = result_data.head(result_limit).copy()
 
         if search_term:
             text_cols = display_data.select_dtypes(include=['object', 'string']).columns
@@ -651,11 +696,10 @@ def show_save_template_sidebar(query_text: str, mode: str = 'new', existing_data
             
             st.info(f"Stai modificando la query '{default_name}' nella categoria '{default_category}'.")
             
-            # Debug info per verificare il caricamento
-            if st.session_state.get('charts_config', []):
-                st.success(f"📊 Caricati {len(st.session_state['charts_config'])} grafici esistenti")
-            if st.session_state.get('ml_config', []):
-                st.success(f"🤖 Caricati {len(st.session_state['ml_config'])} algoritmi ML esistenti")
+            # if st.session_state.get('charts_config', []):
+            #     st.success(f"📊 Caricati {len(st.session_state['charts_config'])} grafici esistenti")
+            # if st.session_state.get('ml_config', []):
+            #     st.success(f"🤖 Caricati {len(st.session_state['ml_config'])} algoritmi ML esistenti")
         else:
             # Modalità new - inizializza solo se non esistono già
             st.session_state.setdefault('charts_config', [])
@@ -717,11 +761,9 @@ def show_save_template_sidebar(query_text: str, mode: str = 'new', existing_data
             key="sidebar_template_name"
         )
         
-        # Mostra query in versione compatta
         with st.expander("📝 Query da salvare", expanded=False):
             st.code(current_query, language="sql")
 
-        # Ottieni le colonne per entrambe le sezioni
         try:
             columns = get_query_columns(current_query, st.session_state.spark_manager.get_spark_session())
         except Exception:
@@ -761,9 +803,12 @@ def show_save_template_sidebar(query_text: str, mode: str = 'new', existing_data
                         x_index = 0
                         if cfg.get("x") and cfg["x"] in columns:
                             x_index = columns.index(cfg["x"])
+
+                        is_pie_chart = (new_type == "Torta")
+                        x_label = "Categorie:" if is_pie_chart else "Asse X:"
                         
                         new_x = st.selectbox(
-                            "Asse X:",
+                            x_label,
                             columns,
                             index=x_index,
                             key=f"sidebar_x_col_{i}"
@@ -771,13 +816,17 @@ def show_save_template_sidebar(query_text: str, mode: str = 'new', existing_data
                         cfg["x"] = new_x
 
                         # Asse Y
-                        y_options = [""] + columns
+                        y_label = "Valori (opz.):" if is_pie_chart else "Asse Y:"
+                        y_options = ([""] + columns) if is_pie_chart else columns
+
+                        # Calcola l'indice iniziale correttamente
                         y_index = 0
                         if cfg.get("y") and cfg["y"] in columns:
-                            y_index = columns.index(cfg["y"]) + 1
-                        
+                            y_index = y_options.index(cfg["y"])
+
+                        # 2. Ora il selettore usa le variabili corrette
                         new_y = st.selectbox(
-                            "Asse Y (opz.):",
+                            y_label,
                             y_options,
                             index=y_index,
                             key=f"sidebar_y_col_{i}"
@@ -850,21 +899,25 @@ def show_save_template_sidebar(query_text: str, mode: str = 'new', existing_data
                     algorithm_info = ml_algorithms[selected_algorithm]
 
                     if columns:
-                        # Selezione features
-                        current_features = ml_cfg.get("features", [])
-                        valid_features = [f for f in current_features if f in columns]
+                        if algorithm_info["type"] != "supervised":
+                            current_features = ml_cfg.get("features", [])
+                            valid_features = [f for f in current_features if f in columns]
+                            
+                            new_features = st.multiselect(
+                                "Features:",
+                                columns,
+                                default=valid_features,
+                                key=f"sidebar_ml_features_{i}",
+                                help="Seleziona le colonne da utilizzare come input"
+                            )
+                            ml_cfg["features"] = new_features
+                            ml_cfg["target"] = None # Assicura che il target sia nullo
                         
-                        new_features = st.multiselect(
-                            "Features:",
-                            columns,
-                            default=valid_features,
-                            key=f"sidebar_ml_features_{i}",
-                            help="Seleziona le colonne da utilizzare come input"
-                        )
-                        ml_cfg["features"] = new_features
-
-                        # Target solo per algoritmi supervisionati
-                        if algorithm_info["type"] == "supervised":
+                        else:
+                            # Messaggio per l'utente
+                            st.info("Tutte le colonne verranno usate come features (esclusa la colonna target). La selezione è automatica.")
+                            
+                            # Selettore per il target (come prima)
                             target_options = [""] + columns
                             current_target = ml_cfg.get("target", "")
                             target_index = 0
@@ -879,8 +932,15 @@ def show_save_template_sidebar(query_text: str, mode: str = 'new', existing_data
                                 help="Variabile dipendente per la predizione"
                             )
                             ml_cfg["target"] = new_target if new_target != "" else None
-                        else:
-                            ml_cfg["target"] = None
+
+                            # NUOVA LOGICA: Popola automaticamente le features
+                            if ml_cfg["target"]:
+                                # Escludi la colonna target dalla lista di tutte le colonne
+                                feature_list = [col for col in columns if col != ml_cfg["target"]]
+                                ml_cfg["features"] = feature_list
+                            else:
+                                # Se non c'è un target, la lista features è vuota (verrà bloccata dalla validazione)
+                                ml_cfg["features"] = []
                     else:
                         st.warning("⚠️ Impossibile determinare le colonne dalla query.")
                     
@@ -924,9 +984,13 @@ def show_save_template_sidebar(query_text: str, mode: str = 'new', existing_data
                     st.error(f"❌ L'algoritmo ML {i+1} deve avere almeno una feature selezionata!")
                     return
                 
-                if (ml_algorithms[ml_cfg["algorithm"]]["type"] == "supervised" and 
-                    not ml_cfg.get("target")):
-                    st.error(f"❌ L'algoritmo supervisionato {ml_cfg['algorithm']} deve avere un target!")
+                if ml_algorithms[ml_cfg["algorithm"]]["type"] != "supervised" and not ml_cfg.get("features"):
+                    st.error(f"❌ L'algoritmo ML '{ml_cfg['algorithm']}' deve avere almeno una feature selezionata!")
+                    return
+                
+                # Il controllo del target rimane valido solo per i supervisionati
+                if ml_algorithms[ml_cfg["algorithm"]]["type"] == "supervised" and not ml_cfg.get("target"):
+                    st.error(f"❌ L'algoritmo supervisionato '{ml_cfg['algorithm']}' deve avere un target!")
                     return
             
             # Gestione modifica (rimozione del vecchio template se cambiato nome/categoria)
