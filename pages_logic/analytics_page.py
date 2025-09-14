@@ -16,7 +16,7 @@ import re
 from pyspark.sql import SparkSession, DataFrame as SparkDataFrame
 from pyspark.ml.feature import VectorAssembler, StandardScaler, StringIndexer, OneHotEncoder, FeatureHasher
 from pyspark.ml.clustering import KMeans, BisectingKMeans
-from pyspark.ml.classification import RandomForestClassifier, GBTClassifier as SparkLogisticRegression
+from pyspark.ml.classification import RandomForestClassifier, GBTClassifier
 from pyspark.ml.regression import LinearRegression as SparkLinearRegression
 from pyspark.ml.evaluation import ClusteringEvaluator, MulticlassClassificationEvaluator, RegressionEvaluator
 from pyspark.ml import Pipeline
@@ -975,17 +975,9 @@ class SparkMLProcessor:
                 .addGrid(model_class.maxIter, [10, 20]) \
                 .addGrid(model_class.maxDepth, [5, 10]) \
                 .build()
-        elif algorithm == "Logistic Regression":
-            model_class = SparkLogisticRegression
-            param_grid = ParamGridBuilder() \
-                .addGrid(model_class.regParam, [0.01, 0.1, 1.0]) \
-                .addGrid(model_class.elasticNetParam, [0.0, 0.5, 1.0]) \
-                .build()
-        
-        # Modello base
+            
         base_model = model_class(featuresCol="features", labelCol="label")
         
-        # Evaluator
         evaluator = MulticlassClassificationEvaluator(
             labelCol="label", 
             predictionCol="prediction", 
