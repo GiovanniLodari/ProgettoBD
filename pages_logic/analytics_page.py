@@ -1,6 +1,6 @@
 """
 Pagina Streamlit per l'analisi visiva automatica e intelligente dei dati.
-Include supporto completo per grafici e algoritmi ML predefiniti dai metadati JSON.
+Include supporto completo per grafici e algoritmi Spark MLlib predefiniti dai metadati JSON.
 """
 
 import streamlit as st
@@ -12,25 +12,24 @@ from typing import Dict, Any, Tuple, Optional, List
 import warnings
 import re
 
-# Import specifici per ML
-from utils.utils import get_twitter_query_templates
-from sklearn.cluster import KMeans, DBSCAN
-from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier, IsolationForest
-from sklearn.linear_model import LinearRegression, LogisticRegression
-from sklearn.svm import SVR, SVC
-from sklearn.decomposition import PCA
-from sklearn.preprocessing import StandardScaler, LabelEncoder
-from sklearn.model_selection import train_test_split, GridSearchCV, RandomizedSearchCV
-from sklearn.metrics import silhouette_score, accuracy_score, mean_squared_error, classification_report
-import xgboost as xgb
-from statsmodels.tsa.seasonal import STL
+# Import specifici per Spark MLlib
+from pyspark.sql import SparkSession, DataFrame as SparkDataFrame
+from pyspark.ml.feature import VectorAssembler, StandardScaler, StringIndexer, OneHotEncoder, FeatureHasher
+from pyspark.ml.clustering import KMeans, BisectingKMeans
+from pyspark.ml.classification import RandomForestClassifier, GBTClassifier as SparkLogisticRegression
+from pyspark.ml.regression import LinearRegression as SparkLinearRegression
+from pyspark.ml.evaluation import ClusteringEvaluator, MulticlassClassificationEvaluator, RegressionEvaluator
+from pyspark.ml import Pipeline
+from pyspark.ml.tuning import CrossValidator, ParamGridBuilder
+from pyspark.sql.functions import col, when, isnan, isnull
+from pyspark.sql.types import DoubleType
 
-# Gestione dipendenza opzionale (Prophet)
-try:
-    from prophet import Prophet
-    PROPHET_AVAILABLE = True
-except ImportError:
-    PROPHET_AVAILABLE = False
+# Algoritmi di ML non supportati da Spark
+from sklearn.ensemble import IsolationForest
+from sklearn.cluster import DBSCAN
+
+# Import per utils
+from utils.utils import get_twitter_query_templates
 
 # Gestione dipendenza opzionale (SciPy)
 try:
@@ -46,40 +45,50 @@ warnings.filterwarnings('ignore')
 
 class GeneralAnalytics:
     """
-    Classe helper per eseguire aggregazioni sui dati utilizzando pandas.
+    Classe helper per eseguire aggregazioni sui dati utilizzando Spark SQL.
     """
-    def __init__(self, dataframe: pd.DataFrame):
+    def __init__(self, dataframe: pd.DataFrame, spark_session: SparkSession = None):
         self.df = dataframe
+        self.spark = spark_session or SparkSession.getActiveSession()
+        if self.spark is None:
+            raise ValueError("Spark session non trovata. Assicurati che Spark sia inizializzato.")
 
     def perform_aggregation(self, group_by_col: str, agg_col: str, agg_type: str, sort_desc: bool = True) -> Optional[pd.DataFrame]:
         """
-        Esegue un'aggregazione su un DataFrame pandas.
+        Esegue un'aggregazione utilizzando Spark SQL per migliori performance.
         """
         try:
+            # Converti pandas DataFrame in Spark DataFrame
+            spark_df = self.spark.createDataFrame(self.df)
+            spark_df.createOrReplaceTempView("temp_table")
+            
             # Gestisce il caso speciale del conteggio
             if agg_col == "count" or agg_type == "count":
-                result = self.df.groupby(group_by_col).size().reset_index(name='count')
-                sort_column = 'count'
-            # Gestisce le aggregazioni numeriche standard
+                query = f"""
+                SELECT {group_by_col}, COUNT(*) as count
+                FROM temp_table
+                GROUP BY {group_by_col}
+                ORDER BY count {'DESC' if sort_desc else 'ASC'}
+                """
             else:
-                result = self.df.groupby(group_by_col)[agg_col].agg(agg_type).reset_index()
-                sort_column = agg_col
+                # Gestisce le aggregazioni numeriche standard
+                query = f"""
+                SELECT {group_by_col}, {agg_type}({agg_col}) as {agg_type}_{agg_col}
+                FROM temp_table
+                WHERE {agg_col} IS NOT NULL
+                GROUP BY {group_by_col}
+                ORDER BY {agg_type}_{agg_col} {'DESC' if sort_desc else 'ASC'}
+                """
             
-            # Rinomina la colonna aggregata per maggiore chiarezza (es. 'val' -> 'sum_val')
-            new_col_name = f"{agg_type}_{agg_col}" if agg_col != 'count' else 'count'
-            result = result.rename(columns={agg_col: new_col_name})
-            sort_column = new_col_name
-            
-            # Ordina i risultati come richiesto
-            if sort_column in result.columns:
-                result = result.sort_values(by=sort_column, ascending=(not sort_desc))
+            result_spark_df = self.spark.sql(query)
+            result = result_spark_df.toPandas()
             
             return result
         except Exception as e:
-            st.error(f"Errore durante l'aggregazione dei dati: {e}")
+            st.error(f"Errore durante l'aggregazione Spark: {e}")
             return None
 
-### 2. CLASSE PER LA VISUALIZZAZIONE DEI GRAFICI
+### 2. CLASSE PER LA VISUALIZZAZIONE DEI GRAFICI (invariata)
 # ==============================================================================
 
 class ChartVisualizer:
@@ -164,19 +173,16 @@ class ChartVisualizer:
         y_col = chart_config.get('y')
         
         try:
-            # ========== PREPARAZIONE CENTRALIZZATA DEI DATI ==========
             prepared_data = self._prepare_chart_data(df, x_col, y_col, chart_type)
             
             if prepared_data is None or prepared_data['df'].empty:
                 st.warning("Nessun dato valido dopo la preparazione.")
                 return None
             
-            # Estrai i dati preparati
             df_final = prepared_data['df']
             x_col_final = prepared_data['x_col']
             y_col_final = prepared_data['y_col']
             
-            # ========== CREAZIONE GRAFICO CON DATI UNIFICATI ==========
             fig = self._create_chart_by_type(df_final, chart_type, x_col_final, y_col_final, x_col)
             
             if fig:
@@ -226,7 +232,7 @@ class ChartVisualizer:
                 if df_clean[x_col].dtype == 'object' and pd.api.types.is_numeric_dtype(df_clean[y_col]):
                     df_final = df_clean.groupby(x_col)[y_col].sum().reset_index()
                 else:
-                    df_final = df_clean[[x_col, y_col]]#.head(500)
+                    df_final = df_clean[[x_col, y_col]]
                 x_col_final, y_col_final = x_col, y_col
         
         return {'df': df_final, 'x_col': x_col_final, 'y_col': y_col_final}
@@ -288,7 +294,7 @@ class ChartVisualizer:
         
         elif chart_type == 'torta':
             if y_col is None or y_col == '':
-                value_counts = df[x_col].value_counts()#.head(10)
+                value_counts = df[x_col].value_counts()
                 df_pie = pd.DataFrame({
                     'categories': value_counts.index,
                     'counts': value_counts.values
@@ -325,26 +331,6 @@ class ChartVisualizer:
                 dragmode='pan',
                 showlegend=True
             )
-            
-            config = {
-                'displayModeBar': True,
-                'displaylogo': False,
-                'modeBarButtonsToAdd': ['pan2d', 'select2d', 'lasso2d'],
-                'modeBarButtonsToRemove': ['autoScale2d'],
-                'scrollZoom': True,
-                'doubleClick': 'reset'
-            }
-            fig.update_layout(
-                annotations=[
-                    dict(
-                        showarrow=False,
-                        xref="paper", yref="paper",
-                        x=0.5, y=-0.1,
-                        xanchor='center', yanchor='top',
-                        font=dict(size=10, color="gray")
-                    )
-                ] if needs_scrolling else []
-            )
 
         return fig
     
@@ -367,37 +353,845 @@ class ChartVisualizer:
                     if fig:
                         st.plotly_chart(fig, use_container_width=True)
 
-### 3. CLASSE PER MACHINE LEARNING
+### 3. CLASSE PER SPARK MLLIB
 # ==============================================================================
 
-class MLProcessor:
+# Aggiornamento per SparkMLProcessor per supportare algoritmi non-Spark
+
+class SparkMLProcessor:
     """
-    Classe migliorata per gestire l'esecuzione di algoritmi ML con ottimizzazione automatica degli iperparametri.
+    Classe per gestire l'esecuzione di algoritmi sia Spark MLlib che scikit-learn.
     """
-    
-    def __init__(self, dataframe: pd.DataFrame):
+    def __init__(self, dataframe: pd.DataFrame, spark_session: SparkSession = None):
         self.df = dataframe.copy()
-        self.scaler = StandardScaler()
-        self.label_encoders = {}
+        
+        if spark_session is not None:
+            self.spark = spark_session
+        else:
+            try:
+                self.spark = st.session_state.spark_manager.get_spark_session()
+                if self.spark is None:
+                    raise ValueError("Nessuna sessione Spark attiva trovata")
+            except Exception:
+                raise ValueError("Impossibile ottenere una sessione Spark valida")        
+        
+        self.spark_df = None
+        self._connection_retries = 3
         
     def get_algorithm_requirements(self) -> Dict[str, Dict[str, Any]]:
-        """Restituisce i requisiti per ogni algoritmo ML."""
+        """Restituisce i requisiti per ogni algoritmo (sia Spark che scikit-learn)."""
         return {
-            'K-Means': {'type': 'clustering', 'requires_target': False, 'min_features': 1, 'description': 'Clustering basato su centroidi'},
-            'DBSCAN': {'type': 'clustering', 'requires_target': False, 'min_features': 1, 'description': 'Clustering basato su densità'},
-            'Random Forest': {'type': 'supervised', 'requires_target': True, 'min_features': 1, 'description': 'Ensemble di alberi decisionali'},
-            'XGBoost': {'type': 'supervised', 'requires_target': True, 'min_features': 1, 'description': 'Gradient boosting ottimizzato'},
-            'Linear Regression': {'type': 'supervised', 'requires_target': True, 'min_features': 1, 'description': 'Regressione lineare semplice'},
-            'Logistic Regression': {'type': 'supervised', 'requires_target': True, 'min_features': 1, 'description': 'Classificazione logistica'},
-            'SVM': {'type': 'supervised', 'requires_target': True, 'min_features': 1, 'description': 'Support Vector Machine'},
-            'PCA': {'type': 'dimensionality', 'requires_target': False, 'min_features': 2, 'description': 'Riduzione dimensionalità lineare'},
-            'Isolation Forest': {'type': 'anomaly', 'requires_target': False, 'min_features': 1, 'description': 'Rilevamento anomalie basato su isolamento'},
-            'STL Decomposition': {'type': 'anomaly', 'requires_target': False, 'min_features': 1, 'description': 'Decomposizione serie temporali'},
-            'Prophet': {'type': 'anomaly', 'requires_target': False, 'min_features': 0, 'description': 'Previsioni serie temporali'}
+            # Spark MLlib - Clustering
+            'K-Means': {
+                'type': 'clustering', 
+                'requires_target': False, 
+                'min_features': 1, 
+                'engine': 'spark',
+                'description': 'Clustering partizionale che raggruppa i dati in k cluster'
+            },
+            'Bisecting K-Means': {
+                'type': 'clustering', 
+                'requires_target': False, 
+                'min_features': 1, 
+                'engine': 'spark',
+                'description': 'Variante di K-Means che usa divisione gerarchica'
+            },
+            
+            # Spark MLlib - Classification
+            'Random Forest Classifier': {
+                'type': 'classification', 
+                'requires_target': True, 
+                'min_features': 1, 
+                'engine': 'spark',
+                'description': 'Ensemble di alberi decisionali per classificazione'
+            },
+            'GBT Classifier': {
+                'type': 'classification', 
+                'requires_target': True, 
+                'min_features': 1, 
+                'engine': 'spark',
+                'description': 'Gradient Boosted Trees per classificazione'
+            },
+            
+            # Spark MLlib - Regression
+            'Linear Regression': {
+                'type': 'regression', 
+                'requires_target': True, 
+                'min_features': 1, 
+                'engine': 'spark',
+                'description': 'Regressione lineare con regolarizzazione'
+            },
+            
+            # Scikit-learn - Clustering e Anomaly Detection
+            'DBSCAN': {
+                'type': 'clustering', 
+                'requires_target': False, 
+                'min_features': 1, 
+                'engine': 'sklearn',
+                'description': 'Clustering basato su densità che identifica cluster di forma arbitraria'
+            },
+            'Isolation Forest': {
+                'type': 'anomaly', 
+                'requires_target': False, 
+                'min_features': 1, 
+                'engine': 'sklearn',
+                'description': 'Rilevamento anomalie tramite isolamento in foreste di alberi'
+            }
         }
     
+    def _ensure_spark_session_active(self):
+        """Verifica e ripristina la sessione Spark se necessario."""
+        for attempt in range(self._connection_retries):
+            try:
+                if self.spark is None or self.spark.sparkContext._jsc is None:
+                    raise RuntimeError("Sessione Spark non attiva")
+                
+                # Test rapido della connessione
+                self.spark.sparkContext.getConf().get("spark.app.name")
+                return True
+                
+            except Exception as e:
+                st.warning(f"Tentativo {attempt + 1}: Sessione Spark non disponibile - {e}")
+                
+                if attempt < self._connection_retries - 1:
+                    try:
+                        # Tenta di ricreare la sessione
+                        self.spark = st.session_state.spark_manager.get_spark_session()
+                        if self.spark is None:
+                            self.spark = st.session_state.spark_manager.restart_spark()
+                    except Exception:
+                        continue
+                else:
+                    raise RuntimeError(f"Impossibile ripristinare la sessione Spark dopo {self._connection_retries} tentativi")
+
+    def _prepare_spark_data_robust(self, features: List[str], target: Optional[str] = None) -> Tuple[SparkDataFrame, List[str]]:
+        """Versione ultra-robusta di preparazione dati Spark con FeatureHasher."""
+        try:
+            self._ensure_spark_session_active()
+            
+            MAX_ROWS_FOR_ML = 5000
+            if len(self.df) > MAX_ROWS_FOR_ML:
+                sample_df = self.df.sample(n=MAX_ROWS_FOR_ML, random_state=42)
+            else:
+                sample_df = self.df
+            
+            if self.spark_df is None:
+                self.spark_df = self.spark.createDataFrame(sample_df)
+                self.spark_df.cache()
+
+            spark_columns = self.spark_df.columns
+            missing_features = [f for f in features if f not in spark_columns]
+            if missing_features:
+                raise ValueError(f"Colonne mancanti: {missing_features}")
+            
+            cols_needed = features + ([target] if target else [])
+            df_clean = self.spark_df.select(*cols_needed).na.drop("any")
+            
+            row_count = df_clean.count()
+            if row_count == 0:
+                raise ValueError("Nessuna riga valida dopo pulizia")
+            elif row_count < 50:
+                raise ValueError(f"Troppo poche righe ({row_count}) per ML affidabile")
+            
+            stages = []
+            
+            string_cols = [f for f in features if dict(df_clean.dtypes).get(f) == 'string']
+            other_cols = [f for f in features if f not in string_cols]
+
+            cleaned_other_cols = []
+            for feature in other_cols:
+                col_type = dict(df_clean.dtypes).get(feature)
+                output_col = f"{feature}_cleaned"
+                
+                if col_type == 'boolean':
+                    df_clean = df_clean.withColumn(output_col, col(feature).cast(DoubleType()))
+                else: # si assume che sia numerico
+                    df_clean = df_clean.withColumn(output_col, 
+                        when(col(feature).isNull() | isnan(col(feature)) | 
+                             (col(feature) == float('inf')) | (col(feature) == float('-inf')), 
+                             0.0).otherwise(col(feature).cast(DoubleType()))
+                    )
+                cleaned_other_cols.append(output_col)
+            
+            final_assembler_cols = cleaned_other_cols
+            if string_cols:
+                hasher = FeatureHasher(
+                    inputCols=string_cols,
+                    outputCol="hashed_features",
+                    numFeatures=256  # Un buon punto di partenza, puoi aumentarlo se necessario (es. 512, 1024)
+                )
+                stages.append(hasher)
+                final_assembler_cols.append("hashed_features")
+
+            if not final_assembler_cols:
+                raise ValueError("Nessuna feature valida dopo il preprocessing")
+
+            # 4. Assembla tutte le feature processate in un unico vettore
+            assembler = VectorAssembler(
+                inputCols=final_assembler_cols,
+                outputCol="features",
+                handleInvalid="keep"  # 'keep' è più robusto di 'skip' o 'error'
+            )
+            stages.append(assembler)
+
+            # 5. Crea ed esegui la pipeline
+            pipeline = Pipeline(stages=stages)
+            pipeline_model = pipeline.fit(df_clean)
+            df_final = pipeline_model.transform(df_clean)
+
+            final_count = df_final.count()
+            if final_count == 0:
+                raise ValueError("Nessuna riga dopo l'assemblaggio delle feature")
+
+            return df_final, final_assembler_cols
+            
+        except Exception as e:
+            if hasattr(self, 'spark_df') and self.spark_df is not None:
+                try:
+                    self.spark_df.unpersist()
+                    self.spark_df = None
+                except:
+                    pass
+            raise ValueError(f"Errore preparazione dati Spark: {e}")
+    
+    def _prepare_spark_data(self, features: List[str], target: Optional[str] = None) -> Tuple[SparkDataFrame, List[str]]:
+        """Prepara i dati Spark con encoding e pulizia - versione sicura."""
+        try:
+            # Verifica sessione prima di iniziare
+            self._ensure_spark_session_active()
+            
+            # Crea Spark DataFrame con gestione errori
+            if self.spark_df is None:
+                # Converti con chunks più piccoli per evitare problemi di memoria
+                chunk_size = min(10000, len(self.df))
+                if len(self.df) > chunk_size:
+                    st.warning(f"Dataset grande ({len(self.df)} righe), usando campione di {chunk_size}")
+                    sample_df = self.df.sample(n=chunk_size, random_state=42)
+                    self.spark_df = self.spark.createDataFrame(sample_df)
+                else:
+                    self.spark_df = self.spark.createDataFrame(self.df)
+            
+            # Verifica che le colonne esistano
+            spark_columns = self.spark_df.columns
+            missing_features = [f for f in features if f not in spark_columns]
+            if missing_features:
+                raise ValueError(f"Colonne mancanti: {missing_features}")
+            
+            # Seleziona colonne necessarie e rimuovi valori nulli
+            cols_needed = features + ([target] if target else [])
+            df_clean = self.spark_df.select(*cols_needed).na.drop()
+            
+            # Controlla che ci siano dati dopo la pulizia
+            row_count = df_clean.count()
+            if row_count == 0:
+                raise ValueError("Nessuna riga valida dopo pulizia")
+            elif row_count < 10:
+                raise ValueError(f"Troppo poche righe ({row_count}) per ML")
+            
+            # Encoding delle colonne categoriche
+            stages = []
+            feature_cols = []
+            
+            for feature in features:
+                try:
+                    col_type = dict(self.spark_df.dtypes)[feature]
+                    
+                    if col_type == 'string':
+                        indexer = StringIndexer(
+                            inputCol=feature, 
+                            outputCol=f"{feature}_indexed",
+                            handleInvalid="keep"
+                        )
+                        stages.append(indexer)
+                        feature_cols.append(f"{feature}_indexed")
+                    else:
+                        df_clean = df_clean.withColumn(feature, col(feature).cast(DoubleType()))
+                        feature_cols.append(feature)
+                except Exception as e:
+                    st.warning(f"Errore feature '{feature}': {e}")
+                    continue
+            
+            if not feature_cols:
+                raise ValueError("Nessuna feature valida dopo preprocessing")
+            
+            # Applica le trasformazioni
+            if stages:
+                pipeline = Pipeline(stages=stages)
+                pipeline_model = pipeline.fit(df_clean)
+                df_clean = pipeline_model.transform(df_clean)
+            
+            # Assembla le features
+            assembler = VectorAssembler(
+                inputCols=feature_cols,
+                outputCol="features",
+                handleInvalid="keep"
+            )
+            
+            df_final = assembler.transform(df_clean)
+            
+            # Verifica finale
+            final_count = df_final.count()
+            if final_count == 0:
+                raise ValueError("Nessuna riga dopo assemblaggio features")
+            
+            return df_final, feature_cols
+            
+        except Exception as e:
+            # Cleanup in caso di errore
+            if hasattr(self, 'spark_df') and self.spark_df is not None:
+                try:
+                    self.spark_df.unpersist()
+                except:
+                    pass
+            raise ValueError(f"Errore preparazione dati Spark: {e}")
+
+    def run_clustering_optimized(self, algorithm: str, features: List[str]) -> Dict[str, Any]:
+        """Esegue algoritmi di clustering Spark MLlib con ottimizzazione degli iperparametri."""
+        try:
+            df_prepared, feature_cols = self._prepare_spark_data(features)
+            
+            if algorithm == "K-Means":
+                return self._run_kmeans_optimized(df_prepared, features)
+            elif algorithm == "Bisecting K-Means":
+                return self._run_bisecting_kmeans_optimized(df_prepared, features)
+            else:
+                return {'error': f"Algoritmo di clustering '{algorithm}' non supportato", 'success': False}
+                
+        except Exception as e:
+            return {'error': f"Errore in {algorithm}: {e}", 'success': False}
+
+    def _run_kmeans_optimized(self, df_prepared: SparkDataFrame, original_features: List[str]) -> Dict[str, Any]:
+        """Versione sicura di K-Means con gestione robusta degli errori."""
+        try:
+            self._ensure_spark_session_active()
+            
+            # Persisti il DataFrame per performance
+            df_prepared.cache()
+            
+            # Verifica dati sufficienti
+            total_rows = df_prepared.count()
+            if total_rows < 4:
+                df_prepared.unpersist()
+                return {'error': f'Troppo poche righe ({total_rows}) per K-Means', 'success': False}
+            
+            # Limita i valori di k
+            max_k = min(10, total_rows // 2)
+            k_values = list(range(2, max_k + 1))
+            
+            if not k_values:
+                df_prepared.unpersist()
+                return {'error': 'Impossibile determinare valori k validi', 'success': False}
+            
+            best_k = 2
+            best_score = -1
+            best_model = None
+            successful_runs = 0
+            
+            st.info(f"Testando K-Means con k da 2 a {max_k} su {total_rows} righe...")
+            progress_bar = st.progress(0)
+            
+            for i, k in enumerate(k_values):
+                progress = (i + 1) / len(k_values)
+                progress_bar.progress(progress)
+                
+                try:
+                    kmeans = KMeans(
+                        k=k, 
+                        featuresCol="features", 
+                        predictionCol="prediction", 
+                        seed=42,
+                        maxIter=20,  # Limita iterazioni
+                        tol=1e-4
+                    )
+                    
+                    model = kmeans.fit(df_prepared)
+                    predictions = model.transform(df_prepared)
+                    
+                    # Usa campione per valutazione se dataset grande
+                    if total_rows > 1000:
+                        eval_sample = predictions.sample(fraction=0.1, seed=42)
+                    else:
+                        eval_sample = predictions
+                    
+                    evaluator = ClusteringEvaluator(
+                        predictionCol="prediction", 
+                        featuresCol="features",
+                        metricName="silhouette"
+                    )
+                    score = evaluator.evaluate(eval_sample)
+                    
+                    if score > best_score:
+                        best_score = score
+                        best_k = k
+                        best_model = model
+                    
+                    successful_runs += 1
+                    
+                except Exception as e:
+                    st.warning(f"Errore con k={k}: {str(e)[:100]}...")
+                    continue
+            
+            progress_bar.empty()
+            
+            if best_model is None or successful_runs == 0:
+                df_prepared.unpersist()
+                return {'error': 'K-Means fallito su tutti i k testati', 'success': False}
+            
+            # Risultati finali - collect() sicuro
+            try:
+                final_predictions = best_model.transform(df_prepared)
+                
+                # Limita righe per collect()
+                if total_rows > 5000:
+                    sample_predictions = final_predictions.sample(fraction=5000/total_rows, seed=42)
+                    labels_data = sample_predictions.select("prediction").collect()
+                    st.warning(f"Visualizzazione su campione di {len(labels_data)} righe")
+                else:
+                    labels_data = final_predictions.select("prediction").collect()
+                
+                labels = [row.prediction for row in labels_data]
+                
+            except Exception as e:
+                df_prepared.unpersist()
+                return {'error': f'Errore raccolta risultati: {e}', 'success': False}
+            
+            # Cleanup
+            df_prepared.unpersist()
+            
+            st.success(f"K-Means completato! K ottimale: {best_k}, Silhouette Score: {best_score:.3f}")
+            
+            return {
+                'algorithm': 'K-Means',
+                'labels': labels,
+                'n_clusters': best_k,
+                'silhouette_score': best_score,
+                'best_params': {'k': best_k},
+                'success': True
+            }
+            
+        except Exception as e:
+            # Cleanup in caso di errore
+            try:
+                df_prepared.unpersist()
+            except:
+                pass
+            return {'error': f'Errore critico K-Means: {e}', 'success': False}
+
+    def _run_bisecting_kmeans_optimized(self, df_prepared: SparkDataFrame, original_features: List[str]) -> Dict[str, Any]:
+        """Versione sicura di Bisecting K-Means."""
+        try:
+            self._ensure_spark_session_active()
+            
+            # Persisti il DataFrame
+            df_prepared.cache()
+            
+            total_rows = df_prepared.count()
+            if total_rows < 4:
+                df_prepared.unpersist()
+                return {'error': f'Troppo poche righe ({total_rows})', 'success': False}
+            
+            max_k = min(10, total_rows // 2)
+            k_values = list(range(2, max_k + 1))
+            
+            if not k_values:
+                df_prepared.unpersist()
+                return {'error': 'Impossibile determinare k validi', 'success': False}
+            
+            best_k = 2
+            best_score = -1
+            best_model = None
+            successful_runs = 0
+            
+            st.info(f"Testando Bisecting K-Means con k da 2 a {max_k}...")
+            progress_bar = st.progress(0)
+            
+            for i, k in enumerate(k_values):
+                progress = (i + 1) / len(k_values)
+                progress_bar.progress(progress)
+                
+                try:
+                    bisecting_kmeans = BisectingKMeans(
+                        k=k, 
+                        featuresCol="features", 
+                        predictionCol="prediction", 
+                        seed=42
+                    )
+                    model = bisecting_kmeans.fit(df_prepared)
+                    predictions = model.transform(df_prepared)
+                    
+                    # Campione per valutazione
+                    if total_rows > 1000:
+                        eval_sample = predictions.sample(fraction=0.1, seed=42)
+                    else:
+                        eval_sample = predictions
+                    
+                    evaluator = ClusteringEvaluator(
+                        predictionCol="prediction", 
+                        featuresCol="features",
+                        metricName="silhouette"
+                    )
+                    score = evaluator.evaluate(eval_sample)
+                    
+                    if score > best_score:
+                        best_score = score
+                        best_k = k
+                        best_model = model
+                    
+                    successful_runs += 1
+                    
+                except Exception as e:
+                    st.warning(f"Errore k={k}: {str(e)[:100]}...")
+                    continue
+            
+            progress_bar.empty()
+            
+            if best_model is None or successful_runs == 0:
+                df_prepared.unpersist()
+                return {'error': 'Bisecting K-Means fallito', 'success': False}
+            
+            # Collect sicuro
+            try:
+                final_predictions = best_model.transform(df_prepared)
+                
+                if total_rows > 5000:
+                    sample_predictions = final_predictions.sample(fraction=5000/total_rows, seed=42)
+                    labels_data = sample_predictions.select("prediction").collect()
+                    st.warning(f"Campione di {len(labels_data)} righe")
+                else:
+                    labels_data = final_predictions.select("prediction").collect()
+                
+                labels = [row.prediction for row in labels_data]
+                
+            except Exception as e:
+                df_prepared.unpersist()
+                return {'error': f'Errore raccolta: {e}', 'success': False}
+            
+            # Cleanup
+            df_prepared.unpersist()
+            
+            st.success(f"Bisecting K-Means completato! K: {best_k}, Score: {best_score:.3f}")
+            
+            return {
+                'algorithm': 'Bisecting K-Means',
+                'labels': labels,
+                'n_clusters': best_k,
+                'silhouette_score': best_score,
+                'best_params': {'k': best_k},
+                'success': True
+            }
+            
+        except Exception as e:
+            try:
+                df_prepared.unpersist()
+            except:
+                pass
+            return {'error': f'Errore Bisecting K-Means: {e}', 'success': False}
+
+    def run_supervised_optimized(self, algorithm: str, features: List[str], target: str) -> Dict[str, Any]:
+        """Versione robusta per algoritmi supervisionati."""
+        try:
+            # Preparazione dati robusta
+            df_prepared, feature_cols = self._prepare_spark_data_robust(features, target)
+            
+            # Determina tipo di problema basandosi sui dati REALI
+            target_unique = self.df[target].nunique()
+            target_is_numeric = pd.api.types.is_numeric_dtype(self.df[target])
+            
+            # Logica migliorata per determinare classificazione vs regressione
+            is_classification = (not target_is_numeric) or (target_unique <= 10 and target_unique >= 2)
+            
+            if is_classification:
+                # Encoding del target per classificazione
+                if target_is_numeric:
+                    # Converti numerico in categorie
+                    df_prepared = df_prepared.withColumn("label", col(target).cast("string"))
+                
+                target_indexer = StringIndexer(
+                    inputCol="label" if target_is_numeric else target, 
+                    outputCol="label",
+                    handleInvalid="keep"
+                )
+                df_prepared = target_indexer.fit(df_prepared).transform(df_prepared)
+            else:
+                # Per regressione
+                df_prepared = df_prepared.withColumn("label", col(target).cast(DoubleType()))
+            
+            # Split con proporzioni adattive
+            total_rows = df_prepared.count()
+            if total_rows < 100:
+                train_ratio = 0.7  # Più dati per training se dataset piccolo
+            else:
+                train_ratio = 0.8
+                
+            train_df, test_df = df_prepared.randomSplit([train_ratio, 1-train_ratio], seed=42)
+            
+            # Verifica split
+            train_count = train_df.count()
+            test_count = test_df.count()
+            
+            if train_count < 10 or test_count < 5:
+                raise ValueError(f"Split inadeguato: train={train_count}, test={test_count}")
+            
+            # Esecuzione basata sul tipo
+            if is_classification and algorithm in ['Random Forest Classifier', 'GBT Classifier']:
+                return self._run_classification_optimized(algorithm, train_df, test_df)
+            elif not is_classification and algorithm == 'Linear Regression':
+                return self._run_regression_optimized(algorithm, train_df, test_df)
+            else:
+                # Suggerisci algoritmo corretto
+                if is_classification:
+                    suggested = algorithm.replace('Regressor', 'Classifier')
+                else:
+                    suggested = algorithm.replace('Classifier', 'Regressor')
+                
+                return {
+                    'error': f"Mismatch algoritmo-problema. Per questo target, usa '{suggested}' invece di '{algorithm}'",
+                    'success': False
+                }
+                
+        except Exception as e:
+            return {'error': f"Errore in {algorithm}: {e}", 'success': False}
+        finally:
+            # Cleanup sempre
+            if hasattr(self, 'spark_df') and self.spark_df is not None:
+                try:
+                    self.spark_df.unpersist()
+                    self.spark_df = None
+                except:
+                    pass
+
+    def _run_classification_optimized(self, algorithm: str, train_df: SparkDataFrame, test_df: SparkDataFrame) -> Dict[str, Any]:
+        """Esegue algoritmi di classificazione con ottimizzazione."""
+        
+        if algorithm == "Random Forest Classifier":
+            model_class = RandomForestClassifier
+            param_grid = ParamGridBuilder() \
+                .addGrid(model_class.numTrees, [10, 20, 50]) \
+                .addGrid(model_class.maxDepth, [5, 10, 15]) \
+                .build()
+        elif algorithm == "GBT Classifier":
+            model_class = GBTClassifier
+            param_grid = ParamGridBuilder() \
+                .addGrid(model_class.maxIter, [10, 20]) \
+                .addGrid(model_class.maxDepth, [5, 10]) \
+                .build()
+        elif algorithm == "Logistic Regression":
+            model_class = SparkLogisticRegression
+            param_grid = ParamGridBuilder() \
+                .addGrid(model_class.regParam, [0.01, 0.1, 1.0]) \
+                .addGrid(model_class.elasticNetParam, [0.0, 0.5, 1.0]) \
+                .build()
+        
+        # Modello base
+        base_model = model_class(featuresCol="features", labelCol="label")
+        
+        # Evaluator
+        evaluator = MulticlassClassificationEvaluator(
+            labelCol="label", 
+            predictionCol="prediction", 
+            metricName="accuracy"
+        )
+        
+        # Cross validation
+        cv = CrossValidator(
+            estimator=base_model,
+            estimatorParamMaps=param_grid,
+            evaluator=evaluator,
+            numFolds=3,
+            seed=42
+        )
+        
+        with st.spinner(f"Ottimizzazione {algorithm} con Cross-Validation..."):
+            cv_model = cv.fit(train_df)
+        
+        # Predizioni sui test
+        predictions = cv_model.transform(test_df)
+        accuracy = evaluator.evaluate(predictions)
+        
+        # Raccogli risultati
+        test_actual = [row.label for row in test_df.select("label").collect()]
+        test_pred = [row.prediction for row in predictions.select("prediction").collect()]
+        
+        best_params = cv_model.bestModel.extractParamMap()
+        best_params_dict = {str(param): value for param, value in best_params.items()}
+        
+        st.success(f"{algorithm} completato! Accuracy: {accuracy:.3f}")
+        
+        return {
+            'algorithm': algorithm,
+            'accuracy': accuracy,
+            'test_actual': test_actual,
+            'predictions': test_pred,
+            'is_classification': True,
+            'best_params': best_params_dict,
+            'success': True
+        }
+
+    def _run_regression_optimized(self, algorithm: str, train_df: SparkDataFrame, test_df: SparkDataFrame) -> Dict[str, Any]:
+        """Versione robusta per regressione."""
+        try:
+            self._ensure_spark_session_active()
+            
+            if algorithm == "Linear Regression":
+                model = SparkLinearRegression(
+                    featuresCol="features", 
+                    labelCol="label",
+                    maxIter=10,
+                    regParam=0.1
+                )
+            
+            trained_model = model.fit(train_df)
+            predictions = trained_model.transform(test_df)
+            
+            evaluator = RegressionEvaluator(
+                labelCol="label", 
+                predictionCol="prediction", 
+                metricName="mse"
+            )
+            mse = evaluator.evaluate(predictions) # Mean Squared Error
+            
+            test_size = test_df.count()
+            if test_size > 1000:
+                sample_test = test_df.sample(fraction=1000/test_size, seed=42)
+                sample_pred = trained_model.transform(sample_test)
+                test_actual = [row.label for row in sample_test.select("label").collect()]
+                test_pred = [row.prediction for row in sample_pred.select("prediction").collect()]
+            else:
+                test_actual = [row.label for row in test_df.select("label").collect()]
+                test_pred = [row.prediction for row in predictions.select("prediction").collect()]
+            
+            return {
+                'algorithm': algorithm,
+                'mse': mse,
+                'test_actual': test_actual,
+                'predictions': test_pred,
+                'is_classification': False,
+                'best_params': {'model': 'simplified'},
+                'success': True
+            }
+            
+        except Exception as e:
+            return {'error': f'Errore {algorithm}: {e}', 'success': False}
+    
+    def _run_dbscan_optimized(self, features: List[str]) -> Dict[str, Any]:
+        """Esegue DBSCAN con ottimizzazione degli iperparametri."""
+        from sklearn.cluster import DBSCAN
+        from sklearn.metrics import silhouette_score
+        
+        X, _, _ = self._prepare_data_robust(features)
+        
+        eps_values = [0.3, 0.5, 0.7, 1.0]
+        min_samples_values = [5, 10]
+        
+        best_score = -1
+        best_params = {}
+        best_labels = None
+        
+        st.info(f"Ottimizzazione DBSCAN: testando {len(eps_values) * len(min_samples_values)} combinazioni...")
+        progress_bar = st.progress(0)
+        
+        total_combinations = len(eps_values) * len(min_samples_values)
+        current_combination = 0
+        
+        for eps in eps_values:
+            for min_samples in min_samples_values:
+                current_combination += 1
+                progress = current_combination / total_combinations
+                progress_bar.progress(progress)
+                
+                try:
+                    dbscan = DBSCAN(eps=eps, min_samples=min_samples)
+                    labels = dbscan.fit_predict(X)
+                    
+                    n_clusters = len(set(labels)) - (1 if -1 in labels else 0)
+                    if n_clusters >= 2:
+                        score = silhouette_score(X, labels)
+                        if score > best_score:
+                            best_score = score
+                            best_params = {'eps': eps, 'min_samples': min_samples}
+                            best_labels = labels
+                
+                except Exception:
+                    continue
+        
+        progress_bar.empty()
+        
+        if best_labels is not None:
+            n_clusters = len(set(best_labels)) - (1 if -1 in best_labels else 0)
+            n_noise = list(best_labels).count(-1)
+            
+            st.success(f"Ottimizzazione DBSCAN completata! Silhouette Score: {best_score:.3f}")
+            st.info(f"Migliori parametri: {best_params}")
+            st.info(f"Cluster trovati: {n_clusters}, Punti noise: {n_noise}")
+            
+            return {
+                'algorithm': 'DBSCAN',
+                'labels': best_labels,
+                'n_clusters': n_clusters,
+                'n_noise': n_noise,
+                'silhouette_score': best_score,
+                'best_params': best_params,
+                'success': True
+            }
+        else:
+            return {
+                'error': 'DBSCAN non è riuscito a trovare cluster validi con i parametri testati',
+                'success': False
+            }
+    
+    def _run_isolation_forest_optimized(self, features: List[str]) -> Dict[str, Any]:
+        """Esegue Isolation Forest ottimizzato."""
+        from sklearn.ensemble import IsolationForest
+        
+        X, _, _ = self._prepare_data_robust(features)
+        
+        best_params = {}
+        with st.spinner("Ottimizzazione Isolation Forest..."):
+            contamination_levels = [0.05, 0.1, 0.15]
+            best_contamination = 0.1
+            min_anomalies = float('inf')
+            
+            for cont in contamination_levels:
+                iso = IsolationForest(contamination=cont, random_state=42)
+                iso.fit(X)
+                predictions = iso.predict(X)
+                n_anomalies = (predictions == -1).sum()
+                
+                if 0 < n_anomalies < min_anomalies:
+                    min_anomalies = n_anomalies
+                    best_contamination = cont
+            
+            best_params['contamination'] = best_contamination
+        
+        final_model = IsolationForest(**best_params, random_state=42)
+        final_model.fit(X)
+        is_anomaly = final_model.predict(X) == -1
+        anomaly_scores = final_model.score_samples(X)
+        
+        st.success(f"Isolation Forest completato! Anomalie rilevate: {is_anomaly.sum()}")
+        st.info(f"Migliori parametri: {best_params}")
+        
+        return {
+            'algorithm': 'Isolation Forest',
+            'is_anomaly': is_anomaly,
+            'n_anomalies': is_anomaly.sum(),
+            'best_params': best_params,
+            'anomaly_scores': anomaly_scores,
+            'success': True
+        }
+    
+    def run_anomaly_detection_optimized(self, algorithm: str, features: List[str]) -> Dict[str, Any]:
+        """Esegue algoritmi di anomaly detection con ottimizzazione."""
+        try:
+            if algorithm == "Isolation Forest":
+                return self._run_isolation_forest_optimized(features)
+            else:
+                return {'error': f"Algoritmo {algorithm} non supportato", 'success': False}
+        except Exception as e:
+            return {'error': f"Errore in {algorithm}: {e}", 'success': False}
+        
     def validate_ml_config(self, ml_config: Dict[str, Any]) -> Tuple[bool, str]:
-        """Valida la configurazione ML con controlli più robusti."""
+        """Valida la configurazione ML con controlli robusti."""
         algorithm = ml_config.get('algorithm')
         features = ml_config.get('features', [])
         target = ml_config.get('target')
@@ -407,262 +1201,24 @@ class MLProcessor:
         
         alg_req = self.get_algorithm_requirements()[algorithm]
         
-        # Validazione speciale per algoritmi di serie temporali
-        if algorithm in ['STL Decomposition', 'Prophet']:
-            if not self._find_datetime_columns() and not features:
-                return False, f"{algorithm} richiede almeno una colonna datetime"
-        elif len(features) < alg_req['min_features']:
+        if len(features) < alg_req['min_features']:
             return False, f"{algorithm} richiede almeno {alg_req['min_features']} feature(s)"
         
-        # Validazione del target per algoritmi supervisionati
         if alg_req['requires_target']:
             if not target or target not in self.df.columns:
                 return False, f"Target '{target}' richiesto e non trovato per {algorithm}"
-            # Verifica che il target non sia incluso nelle features
             if target in features:
                 return False, f"La colonna target '{target}' non può essere inclusa nelle features"
         
         return True, ""
-
-    def _find_datetime_columns(self) -> List[str]:
-        """Trova colonne datetime nel DataFrame con controlli robusti."""
-        datetime_cols = []
-        for col in self.df.columns:
-            if pd.api.types.is_datetime64_any_dtype(self.df[col]):
-                datetime_cols.append(col)
-            elif self.df[col].dtype == 'object':
-                try:
-                    sample_size = min(50, len(self.df))
-                    sample_data = self.df[col].dropna().iloc[:sample_size]
-                    if not sample_data.empty:
-                        pd.to_datetime(sample_data, errors='raise')
-                        datetime_cols.append(col)
-                except (ValueError, TypeError):
-                    pass
-        return datetime_cols
-    
-    def _prepare_data_robust(self, features: List[str], target: Optional[str] = None) -> Tuple[np.ndarray, Optional[np.ndarray], Dict[str, Any]]:
-        """Prepara i dati in modo robusto."""
-        cols_to_use = features + ([target] if target else [])
-        df_clean = self.df[cols_to_use].dropna().copy()
-        
-        if df_clean.empty:
-            raise ValueError("Nessun dato valido dopo la rimozione dei valori mancanti.")
-        
-        X_processed = df_clean[features]
-        for col in features:
-            if X_processed[col].dtype == 'object' or X_processed[col].dtype.name == 'category':
-                le = LabelEncoder()
-                X_processed[col] = le.fit_transform(X_processed[col].astype(str))
-                self.label_encoders[col] = le
-        
-        X_scaled = self.scaler.fit_transform(X_processed)
-        
-        y_processed = None
-        target_type = None
-        if target:
-            y_series = df_clean[target]
-            if y_series.dtype == 'object' or y_series.nunique() <= 10:
-                target_type = 'classification'
-                le = LabelEncoder()
-                y_processed = le.fit_transform(y_series.astype(str))
-                self.label_encoders[target] = le
-            else:
-                target_type = 'regression'
-                y_processed = y_series.values
-
-        metadata = {'target_type': target_type}
-        return X_scaled, y_processed, metadata
-    
-    def _optimize_hyperparameters(self, algorithm: str, X: np.ndarray, y: Optional[np.ndarray] = None, is_classification: bool = True) -> Tuple[Any, Dict[str, Any]]:
-        """Ottimizza gli iperparametri usando Grid Search."""
-        param_grids = {
-            'K-Means': {'n_clusters': [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]},
-            'DBSCAN': {'eps': [0.3, 0.5, 0.7, 1], 'min_samples': [5, 10]},
-            'Random Forest': {'n_estimators': [50, 100, 200], 'max_depth': [5, 10, None]},
-            'XGBoost': {'n_estimators': [50, 100, 200], 'max_depth': [3, 5], 'learning_rate': [0.01, 0.1]},
-            'SVM': {'C': [0.1, 1, 10], 'kernel': ['linear', 'poly', 'rbf']}
-        }
-        model_map = {
-            'K-Means': KMeans, 'DBSCAN': DBSCAN, 'Random Forest': RandomForestClassifier if is_classification else RandomForestRegressor,
-            'XGBoost': xgb.XGBClassifier if is_classification else xgb.XGBRegressor, 'SVM': SVC if is_classification else SVR
-        }
-        
-        if algorithm not in param_grids:
-            return model_map.get(algorithm, lambda: None)(), {}
-
-        model_class = model_map[algorithm]
-        param_grid = param_grids[algorithm]
-        
-        if y is not None: # Algoritmi supervisionati
-            search = GridSearchCV(model_class(random_state=42), param_grid, cv=3, n_jobs=-1)
-            search.fit(X, y)
-            return search.best_estimator_, search.best_params_
-        else: # Clustering
-            best_score = -1
-            best_params = {}
-            from itertools import product
-            for params in [dict(zip(param_grid.keys(), v)) for v in product(*param_grid.values())]:
-                try:
-                    model = model_class(**params)
-                    labels = model.fit_predict(X)
-                    if len(set(labels)) > 1:
-                        score = silhouette_score(X, labels)
-                        if score > best_score:
-                            best_score, best_params = score, params
-                except: continue
-            return model_class(**best_params).fit(X), best_params
-
-    def run_clustering_optimized(self, algorithm: str, X: np.ndarray) -> Dict[str, Any]:
-        """Esegue clustering con ottimizzazione automatica."""
-        with st.spinner(f"Ottimizzazione iperparametri per {algorithm}..."):
-            best_model, best_params = self._optimize_hyperparameters(algorithm, X)
-        
-        labels = best_model.labels_
-        n_clusters = len(set(labels)) - (1 if -1 in labels else 0)
-        silhouette = silhouette_score(X, labels) if n_clusters > 1 else 0
-        
-        return {
-            'algorithm': algorithm, 'labels': labels, 'n_clusters': n_clusters,
-            'n_noise': list(labels).count(-1) if algorithm == 'DBSCAN' else 0,
-            'silhouette_score': silhouette, 'best_params': best_params, 'success': True
-        }
-
-    def run_supervised_optimized(self, algorithm: str, X: np.ndarray, y: np.ndarray, metadata: Dict) -> Dict[str, Any]:
-        """Esegue algoritmi supervisionati con ottimizzazione."""
-        is_classification = metadata['target_type'] == 'classification'
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42, stratify=y if is_classification else None)
-        
-        with st.spinner(f"Ottimizzazione iperparametri per {algorithm}..."):
-            best_model, best_params = self._optimize_hyperparameters(algorithm, X_train, y_train, is_classification)
-        
-        best_model.fit(X_train, y_train)
-        y_pred = best_model.predict(X_test)
-        
-        metric_name, score = ('accuracy', accuracy_score(y_test, y_pred)) if is_classification else ('mse', mean_squared_error(y_test, y_pred))
-        
-        return {
-            'algorithm': algorithm, 'model': best_model, 'predictions': y_pred, 'test_actual': y_test,
-            metric_name: score, 'is_classification': is_classification, 'best_params': best_params,
-            'classification_report': classification_report(y_test, y_pred, output_dict=True, zero_division=0) if is_classification else None,
-            'success': True
-        }
-
-    def run_anomaly_detection_optimized(self, algorithm: str, features: List[str]) -> Dict[str, Any]:
-        """Esegue algoritmi di anomaly detection con ottimizzazione."""
-        try:
-            if algorithm == "Isolation Forest":
-                return self._run_isolation_forest_optimized(features)
-            elif algorithm == "STL Decomposition":
-                return self._run_stl_decomposition_optimized(features)
-            elif algorithm == "Prophet":
-                return self._run_prophet_anomaly_optimized()
-            else:
-                return {'error': f"Algoritmo {algorithm} non supportato", 'success': False}
-        except Exception as e:
-            return {'error': f"Errore in {algorithm}: {e}", 'success': False}
-
-    def _prepare_time_series_data(self, features: List[str] = None) -> Tuple[pd.DataFrame, str, str]:
-        """Prepara dati per analisi serie temporali."""
-        datetime_cols = self._find_datetime_columns()
-        if not datetime_cols: raise ValueError("Nessuna colonna datetime trovata.")
-        date_col = datetime_cols[0]
-        
-        value_col = features[0] if features else next((c for c in self.df.select_dtypes(include=np.number).columns if c != date_col), None)
-        if not value_col: raise ValueError("Nessuna colonna numerica trovata.")
-
-        df_ts = self.df[[date_col, value_col]].copy()
-        df_ts[date_col] = pd.to_datetime(df_ts[date_col], errors='coerce')
-        return df_ts.dropna().sort_values(date_col), date_col, value_col
-    
-    def _run_isolation_forest_optimized(self, features: List[str]) -> Dict[str, Any]:
-        """Esegue Isolation Forest ottimizzato."""
-        X, _, _ = self._prepare_data_robust(features)
-        
-        best_params = {}
-        with st.spinner("Ottimizzazione Isolation Forest..."):
-            contamination_levels = [0.05, 0.1, 0.15]
-            best_contamination, min_anomalies = 0.1, float('inf')
-            for cont in contamination_levels:
-                iso = IsolationForest(contamination=cont, random_state=42).fit(X)
-                n_anomalies = (iso.predict(X) == -1).sum()
-                if 0 < n_anomalies < min_anomalies:
-                    min_anomalies = n_anomalies
-                    best_contamination = cont
-            best_params['contamination'] = best_contamination
-
-        final_model = IsolationForest(**best_params, random_state=42).fit(X)
-        is_anomaly = final_model.predict(X) == -1
-        
-        return {
-            'algorithm': 'Isolation Forest', 'is_anomaly': is_anomaly, 'n_anomalies': is_anomaly.sum(),
-            'best_params': best_params, 'anomaly_scores': final_model.score_samples(X), 'success': True
-        }
-
-    def _run_stl_decomposition_optimized(self, features: List[str]) -> Dict[str, Any]:
-        """Esegue STL Decomposition ottimizzato."""
-        df_ts, date_col, value_col = self._prepare_time_series_data(features)
-        df_ts = df_ts.set_index(date_col)
-        
-        best_params = {}
-        with st.spinner("Ottimizzazione periodo STL..."):
-            possible_periods = [p for p in [7, 30, 365] if len(df_ts) >= p * 2]
-            best_period, best_aic = 7, float('inf')
-            for period in possible_periods:
-                resid = STL(df_ts[value_col], period=period).fit().resid
-                aic = len(resid) * np.log(np.var(resid)) + 2 * period
-                if aic < best_aic: best_aic, best_period = aic, period
-            best_params['period'] = best_period
-        
-        decomposition = STL(df_ts[value_col], **best_params).fit()
-        threshold = 2.5 * decomposition.resid.std()
-        is_anomaly = np.abs(decomposition.resid) > threshold
-        
-        return {
-            'algorithm': 'STL Decomposition', 'decomposition': decomposition, 'is_anomaly': is_anomaly,
-            'n_anomalies': is_anomaly.sum(), 'best_params': best_params, 'data': df_ts, 'success': True
-        }
-
-    def _run_prophet_anomaly_optimized(self) -> Dict[str, Any]:
-        """Esegue Prophet ottimizzato."""
-        if not PROPHET_AVAILABLE: return {'error': "Prophet non installato.", 'success': False}
-        df_ts, _, _ = self._prepare_time_series_data()
-        prophet_df = df_ts.rename(columns={df_ts.columns[0]: 'ds', df_ts.columns[1]: 'y'})
-
-        model = Prophet(interval_width=0.95, yearly_seasonality='auto', daily_seasonality='auto').fit(prophet_df)
-        forecast = model.predict(prophet_df)
-        is_anomaly = (prophet_df['y'] < forecast['yhat_lower']) | (prophet_df['y'] > forecast['yhat_upper'])
-
-        return {
-            'algorithm': 'Prophet', 'model': model, 'forecast': forecast, 'is_anomaly': is_anomaly,
-            'n_anomalies': is_anomaly.sum(), 'best_params': {'interval_width': 0.95}, 'success': True
-        }
-    
-    def run_pca_optimized(self, features: List[str]) -> Dict[str, Any]:
-        """Esegue PCA con ottimizzazione automatica dei componenti."""
-        X, _, _ = self._prepare_data_robust(features)
-        
-        with st.spinner("Ottimizzazione numero componenti PCA..."):
-            pca_temp = PCA().fit(X)
-            cumulative_variance = np.cumsum(pca_temp.explained_variance_ratio_)
-            optimal_components = np.where(cumulative_variance >= 0.95)[0][0] + 1
-        
-        final_pca = PCA(n_components=optimal_components).fit(X)
-        
-        return {
-            'algorithm': 'PCA', 'model': final_pca, 'transformed_data': final_pca.transform(X),
-            'explained_variance_ratio': final_pca.explained_variance_ratio_,
-            'total_explained_variance': sum(final_pca.explained_variance_ratio_),
-            'n_components': optimal_components, 'best_params': {'n_components': optimal_components}, 'success': True
-        }
     
     def execute_ml_config(self, ml_config: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Esegue una configurazione ML completa con ottimizzazione automatica.
-        Ora gestisce automaticamente le features per algoritmi supervisionati.
+        Esegue una configurazione ML completa (Spark o scikit-learn).
         """
         is_valid, error_msg = self.validate_ml_config(ml_config)
-        if not is_valid: return {'error': error_msg, 'success': False}
+        if not is_valid:
+            return {'error': error_msg, 'success': False}
         
         algorithm = ml_config['algorithm']
         features = ml_config.get('features', [])
@@ -671,167 +1227,81 @@ class MLProcessor:
         try:
             alg_req = self.get_algorithm_requirements()[algorithm]
             alg_type = alg_req['type']
+            engine = alg_req['engine']
             
-            # Per algoritmi supervisionati, se features non sono specificate,
-            # usa tutte le colonne tranne il target
-            if alg_type == 'supervised' and target:
-                if not features:
-                    # Seleziona automaticamente tutte le colonne numeriche e categoriche, escluso il target
-                    available_features = [col for col in self.df.columns 
-                                        if col != target and 
-                                        (self.df[col].dtype in ['int64', 'float64', 'object', 'category'] or 
-                                         pd.api.types.is_numeric_dtype(self.df[col]))]
-                    features = available_features
-                    ml_config['features'] = features  # Aggiorna la configurazione
+            if engine == 'spark':
+                if self.spark_df is None:
+                    self.spark_df = self.spark.createDataFrame(self.df)
                 
-                if not features:
-                    return {'error': f"Nessuna feature valida trovata per {algorithm}", 'success': False}
+                if alg_type == 'clustering':
+                    return self.run_clustering_optimized(algorithm, features)
+                elif alg_type in ['classification', 'regression']:
+                    return self.run_supervised_optimized(algorithm, features, target)
             
-            if alg_type == 'anomaly':
-                return self.run_anomaly_detection_optimized(algorithm, features)
+            elif engine == 'sklearn':
+                if alg_type == 'clustering':
+                    if algorithm == 'DBSCAN':
+                        return self._run_dbscan_optimized(features)
+                elif alg_type == 'anomaly':
+                    return self.run_anomaly_detection_optimized(algorithm, features)
             
-            X, y, metadata = self._prepare_data_robust(features, target)
-            
-            if alg_type == 'clustering':
-                return self.run_clustering_optimized(algorithm, X)
-            elif alg_type == 'supervised':
-                return self.run_supervised_optimized(algorithm, X, y, metadata)
-            elif alg_type == 'dimensionality':
-                return self.run_pca_optimized(features)
-            
-            return {'error': f"Tipo di algoritmo '{alg_type}' non gestito.", 'success': False}
+            return {'error': f"Combinazione algoritmo/engine '{algorithm}/{engine}' non gestita.", 'success': False}
                 
         except Exception as e:
             return {'error': f"Errore nell'esecuzione di {algorithm}: {e}", 'success': False}
 
-### 4. CLASSE PER VISUALIZZAZIONE ML
+### 4. CLASSE PER VISUALIZZAZIONE ML CON SPARK
 # ==============================================================================
 
-class MLVisualizer:
-    """Classe migliorata per visualizzare i risultati degli algoritmi ML."""
+class SparkMLVisualizer:
+    """Classe per visualizzare i risultati degli algoritmi Spark MLlib e scikit-learn."""
     
-    def __init__(self, ml_processor: MLProcessor):
+    def __init__(self, ml_processor: SparkMLProcessor):
         self.ml_processor = ml_processor
-    
-    def _prepare_chart_data(self, df: pd.DataFrame, chart_config: Dict[str, Any]) -> Tuple[pd.DataFrame, str, str, str]:
-        """
-        Prepara i dati per la visualizzazione dei grafici gestendo configurazioni multiple per X.
-        
-        Returns:
-            Tuple[pd.DataFrame, str, str, str]: (dataframe_preparato, colonna_x_effettiva, colonna_y, nome_originale_x)
-        """
-        x_config = chart_config.get('x')
-        y_col = chart_config.get('y')
-        chart_type = chart_config.get('type', '')
-        
-        # Gestione X multi-colonna per grafici a barre e linee
-        if isinstance(x_config, list) and len(x_config) > 1 and chart_type in ['barre', 'linee']:
-            # Crea una colonna combinata concatenando i valori
-            combined_col_name = 'combined_x_axis'
-            df_prepared = df.copy()
-            
-            # Concatena i valori delle colonne X con un separatore
-            combined_values = df_prepared[x_config[0]].astype(str)
-            for col in x_config[1:]:
-                combined_values = combined_values + ' - ' + df_prepared[col].astype(str)
-            
-            df_prepared[combined_col_name] = combined_values
-            original_x_name = ' e '.join(x_config)
-            
-            return df_prepared, combined_col_name, y_col, original_x_name
-        
-        # Gestione standard (X singola)
-        elif isinstance(x_config, list) and len(x_config) == 1:
-            x_col = x_config[0]
-        else:
-            x_col = x_config if isinstance(x_config, str) else x_config[0] if x_config else None
-        
-        if not x_col:
-            raise ValueError("Configurazione X non valida")
-        
-        return df.copy(), x_col, y_col, x_col
-    
-    def _create_chart_by_type(self, df: pd.DataFrame, chart_type: str, x_col: str, y_col: str, 
-                            original_x_col: str) -> Optional[go.Figure]:
-        """Crea il grafico specifico usando dati già preparati e unificati."""
-        fig = None
-        
-        if chart_type == 'barre':
-            fig = px.bar(df, x=x_col, y=y_col, title=f"Grafico a Barre - {y_col} per {original_x_col}")
-            fig.update_traces(width=0.6)
-            fig.update_xaxes(title=original_x_col, type='category')
-        
-        elif chart_type == 'linee':
-            fig = px.line(df, x=x_col, y=y_col, markers=True, title=f"Grafico a Linee - {y_col} rispetto a {original_x_col}")
-            fig.update_xaxes(title=original_x_col, type='category')
-        
-        elif chart_type == 'serie temporale con picchi':
-            st.warning("Serie temporale con picchi richiede dati originali - implementazione speciale necessaria.")
-            return None
-        
-        elif chart_type == 'torta':
-            # Gestione speciale per grafici a torta
-            if y_col is None or y_col == '':
-                # Modalità conteggio: conta le occorrenze di ogni categoria
-                value_counts = df[x_col].value_counts()#.head(10)
-                df_pie = pd.DataFrame({
-                    'categories': value_counts.index,
-                    'counts': value_counts.values
-                })
-                fig = px.pie(df_pie, values='counts', names='categories', 
-                           title=f"Distribuzione per {original_x_col} (Conteggio)")
-            else:
-                # Modalità aggregazione: somma i valori per categoria
-                df_agg = df.groupby(x_col)[y_col].sum().reset_index()
-                df_pie = df_agg.nlargest(10, y_col) if len(df_agg) > 10 else df_agg
-                fig = px.pie(df_pie, values=y_col, names=x_col, 
-                           title=f"Distribuzione - {y_col} per {original_x_col}")
-        
-        elif chart_type == 'heatmap':
-            if len(df[x_col].unique()) <= 50 and len(df[y_col].unique()) <= 50:
-                crosstab = pd.crosstab(df[y_col], df[x_col])
-                fig = px.imshow(
-                    crosstab, 
-                    title=f"Heatmap: {y_col} vs {x_col}",
-                    color_continuous_scale='Plasma'
-                    )
-            else:
-                st.info("Dato l'elevato numero di valori unici, è stato generato un Density Heatmap per visualizzare la densità dei punti.")
-                fig = px.density_heatmap(
-                    df,
-                    x=x_col,
-                    y=y_col,
-                    title=f"Density Heatmap: {y_col} vs {x_col}",
-                    nbinsx=50,
-                    nbinsy=50,
-                    color_continuous_scale='Plasma'
-                )
 
-        return fig
+    def display_ml_results(self, ml_results: List[Dict[str, Any]], ml_configs: List[Dict[str, Any]]):
+        """Visualizza tutti i risultati ML usando la logica unificata per Spark e scikit-learn."""
+        if not ml_results:
+            st.info("Nessun algoritmo ML configurato")
+            return
+
+        st.divider()
+        st.markdown("### 🤖 Risultati Machine Learning (Spark + Scikit-learn)")
+
+        # Gestisci il caso di un singolo algoritmo
+        if len(ml_results) == 1:
+            st.markdown(f"#### {ml_configs[0].get('algorithm', 'Algoritmo Sconosciuto')}")
+            self.visualize_results(ml_results[0], ml_configs[0])
+            return
+
+        # Gestisci più algoritmi con tab
+        tab_names = []
+        for i, cfg in enumerate(ml_configs):
+            algorithm = cfg.get('algorithm', f'Algoritmo {i+1}')
+            # Aggiungi indicatore engine se disponibile
+            engine_info = self._get_engine_indicator(algorithm)
+            tab_names.append(f"{algorithm} {engine_info}")
+
+        tabs = st.tabs(tab_names)
+
+        for tab, result, config in zip(tabs, ml_results, ml_configs):
+            with tab:
+                self.visualize_results(result, config)
     
-    def visualize_chart(self, df: pd.DataFrame, chart_config: Dict[str, Any]) -> None:
-        """
-        Visualizza un grafico utilizzando la configurazione fornita.
-        Gestisce automaticamente configurazioni X multiple e modalità diverse per grafici a torta.
-        """
-        try:
-            # Prepara i dati gestendo le configurazioni multiple
-            df_prepared, x_col_effective, y_col, original_x_name = self._prepare_chart_data(df, chart_config)
-            
-            # Crea il grafico
-            chart_type = chart_config.get('type', '')
-            fig = self._create_chart_by_type(df_prepared, chart_type, x_col_effective, y_col, original_x_name)
-            
-            if fig:
-                st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.error("Impossibile creare il grafico con la configurazione fornita.")
-                
-        except Exception as e:
-            st.error(f"Errore nella visualizzazione del grafico: {e}")
+    def _get_engine_indicator(self, algorithm: str) -> str:
+        """Restituisce un indicatore visivo per l'engine utilizzato."""
+        spark_algorithms = [
+            'K-Means', 'Bisecting K-Means', 'Random Forest Classifier', 
+            'GBT Classifier', 'Linear Regression'
+        ]
+        
+        if algorithm in spark_algorithms:
+            return "⚡"  # Spark
+        else:
+            return "🐍"  # Scikit-learn
     
     def visualize_results(self, results: Dict[str, Any], config: Dict[str, Any]):
-        """Visualizza i risultati ML con una logica unificata."""
+        """Visualizza i risultati ML con logica unificata per Spark e scikit-learn."""
         if not results.get('success', False):
             st.error(f"❌ {results.get('error', 'Errore sconosciuto')}")
             return
@@ -843,73 +1313,78 @@ class MLVisualizer:
                 st.json(results['best_params'])
         
         # Dispatch alla funzione di visualizzazione specifica
-        if algorithm in ['K-Means', 'DBSCAN']:
+        if algorithm in ['K-Means', 'Bisecting K-Means', 'DBSCAN']:
             self._visualize_clustering(results, config)
-        elif algorithm in ['Random Forest', 'XGBoost', 'Linear Regression', 'Logistic Regression', 'SVM']:
+        elif algorithm in ['Random Forest Classifier', 'GBT Classifier', 'Linear Regression']:
             self._visualize_supervised(results)
-        elif algorithm == 'PCA':
-            self._visualize_pca(results)
-        elif algorithm in ['Isolation Forest', 'STL Decomposition', 'Prophet']:
-            self._visualize_anomaly_detection(results)
+        elif algorithm == 'Isolation Forest':
+            self._visualize_anomaly_detection(results, config)
     
     def _visualize_clustering(self, results: Dict, config: Dict):
-        """Visualizza risultati clustering."""
-        col1, col2 = st.columns(2)
-        col1.metric("Cluster Trovati", results.get('n_clusters', 'N/A'))
-        col2.metric("Silhouette Score", f"{results.get('silhouette_score', 0):.3f}")
+        """Visualizza risultati clustering (Spark e scikit-learn)."""
+        algorithm = results['algorithm']
+        
+        # Metriche specifiche per algoritmo
+        if algorithm == 'DBSCAN':
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Cluster Trovati", results.get('n_clusters', 'N/A'))
+            col2.metric("Punti Noise", results.get('n_noise', 'N/A'))
+            col3.metric("Silhouette Score", f"{results.get('silhouette_score', 0):.3f}")
+        else:
+            # K-Means e Bisecting K-Means
+            col1, col2 = st.columns(2)
+            col1.metric("Cluster Trovati", results.get('n_clusters', 'N/A'))
+            col2.metric("Silhouette Score", f"{results.get('silhouette_score', 0):.3f}")
         
         features = config.get('features', [])
         if len(features) >= 2 and 'labels' in results:
             original_df = self.ml_processor.df.copy()
-            df_clean = original_df[features].dropna()            
+            df_clean = original_df[features].dropna()
+            
             if len(df_clean) == len(results['labels']):
                 df_plot = df_clean.copy()
                 df_plot['Cluster'] = results['labels']
+                
+                # Per DBSCAN, gestisci i punti noise
+                if algorithm == 'DBSCAN':
+                    df_plot['Cluster'] = df_plot['Cluster'].astype(str)
+                    df_plot.loc[df_plot['Cluster'] == '-1', 'Cluster'] = 'Noise'
+                else:
+                    df_plot['Cluster'] = df_plot['Cluster'].astype(str)
 
-                hover_col = next((col for col in original_df.columns if col not in features and original_df[col].dtype == 'object'), None)
+                hover_col = next((col for col in original_df.columns 
+                                if col not in features and original_df[col].dtype == 'object'), None)
                 
                 if hover_col:
                     df_plot[hover_col] = original_df.loc[df_clean.index, hover_col]
-                df_plot['Cluster'] = df_plot['Cluster'].astype(str)
+
+                # Colori specifici per DBSCAN (evidenzia noise)
+                if algorithm == 'DBSCAN':
+                    color_map = {}
+                    unique_clusters = df_plot['Cluster'].unique()
+                    colors = px.colors.qualitative.Set3
+                    
+                    for i, cluster in enumerate(unique_clusters):
+                        if cluster == 'Noise':
+                            color_map[cluster] = '#808080'  # Grigio per noise
+                        else:
+                            color_map[cluster] = colors[i % len(colors)]
+                else:
+                    color_map = None
 
                 fig = px.scatter(
                     df_plot, 
                     x=features[0], 
                     y=features[1], 
                     color='Cluster', 
-                    title=f"Visualizzazione Cluster {results['algorithm']}",
+                    title=f"Visualizzazione Cluster {algorithm}",
                     hover_name=hover_col,
-                    color_discrete_sequence=px.colors.qualitative.Vivid
+                    color_discrete_map=color_map
                 )
+                
                 st.plotly_chart(fig, use_container_width=True)
     
-    def _visualize_supervised(self, results: Dict):
-        """Visualizza risultati algoritmi supervisionati."""
-        is_classification = results.get('is_classification', False)
-        metric_name = "Accuracy" if is_classification else "MSE"
-        metric_val = results.get('accuracy') if is_classification else results.get('mse')
-        st.metric(metric_name, f"{metric_val:.3f}")
-        
-        y_test, y_pred = results['test_actual'], results['predictions']
-        if is_classification:
-            conf_matrix = pd.crosstab(pd.Series(y_test, name='Reali'), pd.Series(y_pred, name='Predizioni'))
-            fig = px.imshow(conf_matrix, text_auto=True, title="Matrice di Confusione")
-        else:
-            fig = px.scatter(x=y_test, y=y_pred, labels={'x': 'Valori Reali', 'y': 'Predizioni'}, title="Predizioni vs. Valori Reali")
-            fig.add_shape(type="line", x0=min(y_test), y0=min(y_test), x1=max(y_test), y1=max(y_test), line=dict(dash="dash", color="red"))
-        st.plotly_chart(fig, use_container_width=True)
-    
-    def _visualize_pca(self, results: Dict):
-        """Visualizza risultati PCA."""
-        col1, col2 = st.columns(2)
-        col1.metric("Componenti Ottimali", results.get('n_components', 'N/A'))
-        col2.metric("Varianza Spiegata", f"{results.get('total_explained_variance', 0):.2%}")
-        
-        explained_var = results.get('explained_variance_ratio', [])
-        fig = px.bar(x=[f"PC{i+1}" for i in range(len(explained_var))], y=explained_var, title="Varianza Spiegata per Componente")
-        st.plotly_chart(fig, use_container_width=True)
-    
-    def _visualize_anomaly_detection(self, results: Dict):
+    def _visualize_anomaly_detection(self, results: Dict, config: Dict):
         """Visualizza risultati anomaly detection."""
         st.metric("Anomalie Rilevate", results.get('n_anomalies', 'N/A'))
         
@@ -927,71 +1402,54 @@ class MLVisualizer:
                 hover_data=scores_df.columns
             )
             st.plotly_chart(fig, use_container_width=True)
+    
+    def _visualize_supervised(self, results: Dict):
+        """Visualizza risultati algoritmi supervisionati (invariata)."""
+        is_classification = results.get('is_classification', False)
+        target_type = results.get('target_type', 'classification' if is_classification else 'regression')
+        
+        if is_classification:
+            metric_val = results.get('accuracy', 0)
+            st.metric("Accuracy", f"{metric_val:.3f}")
+        else:
+            metric_val = results.get('mse', 0)
+            st.metric("MSE", f"{metric_val:.3f}")
+        
+        y_test, y_pred = results['test_actual'], results['predictions']
+        
+        if is_classification:
+            # Matrice di confusione
+            conf_matrix = pd.crosstab(
+                pd.Series(y_test, name='Reali'), 
+                pd.Series(y_pred, name='Predizioni')
+            )
+            fig = px.imshow(conf_matrix, text_auto=True, 
+                           title="Matrice di Confusione",
+                           color_continuous_scale='Blues')
+        else:
+            # Scatter plot per regressione
+            fig = px.scatter(
+                x=y_test, y=y_pred, 
+                labels={'x': 'Valori Reali', 'y': 'Predizioni'}, 
+                title="Predizioni vs. Valori Reali"
+            )
+            # Linea ideale
+            fig.add_shape(
+                type="line", 
+                x0=min(y_test), y0=min(y_test), 
+                x1=max(y_test), y1=max(y_test), 
+                line=dict(dash="dash", color="red")
+            )
+        
+        st.plotly_chart(fig, use_container_width=True)
 
-            
-        elif results['algorithm'] == 'STL Decomposition':
-            decomp = results['decomposition']
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(x=decomp.observed.index, y=decomp.observed, mode='lines', name='Originale'))
-            fig.add_trace(go.Scatter(x=decomp.trend.index, y=decomp.trend, mode='lines', name='Trend'))
-            anomalies = decomp.resid[results['is_anomaly']]
-            fig.add_trace(go.Scatter(x=anomalies.index, y=anomalies, mode='markers', name='Anomalie', marker=dict(color='red', size=8)))
-            fig.update_layout(title="Decomposizione STL con Anomalie")
-            st.plotly_chart(fig, use_container_width=True)
-            
-        elif results['algorithm'] == 'Prophet':
-            fig = results['model'].plot(results['forecast'])
-            anomalies = results['forecast'][results['is_anomaly']]
-            fig.add_trace(go.Scatter(x=anomalies['ds'], y=anomalies['yhat'], mode='markers', name='Anomalie', marker=dict(color='red', size=8)))
-            st.plotly_chart(fig, use_container_width=True)
-
-    def display_ml_results(self, ml_results: List[Dict[str, Any]], ml_configs: List[Dict[str, Any]]):
-        """Visualizza tutti i risultati ML usando la logica unificata."""
-        if not ml_results:
-            st.info("Nessun algoritmo ML configurato")
-            return
-
-        st.divider()
-        st.markdown("### 🤖 Risultati Machine Learning")
-
-        tab_names = [cfg.get('algorithm', 'Sconosciuto') for cfg in ml_configs]
-        tabs = st.tabs(tab_names)
-
-        for tab, result, config in zip(tabs, ml_results, ml_configs):
-            with tab:
-                # Chiama la funzione di visualizzazione unificata per ogni risultato
-                self.visualize_results(result, config)
-
-    def display_chart_results(self, chart_results: List[Dict[str, Any]], chart_configs: List[Dict[str, Any]], df: pd.DataFrame):
-        """
-        Visualizza tutti i grafici configurati utilizzando la nuova logica di gestione.
-        """
-        if not chart_results or not chart_configs:
-            st.info("Nessun grafico configurato")
-            return
-
-        st.divider()
-        st.markdown("### 📊 Grafici Configurati")
-
-        # Crea tab per ogni grafico
-        tab_names = [f"{cfg.get('type', 'Grafico').title()} - {cfg.get('title', 'Senza Titolo')}" 
-                    for cfg in chart_configs]
-        tabs = st.tabs(tab_names)
-
-        for tab, chart_config in zip(tabs, chart_configs):
-            with tab:
-                try:
-                    # Utilizza il metodo di visualizzazione unificato
-                    self.visualize_chart(df, chart_config)
-                except Exception as e:
-                    st.error(f"Errore nella visualizzazione del grafico: {e}")
-
-### 5. FUNZIONI DI SUPPORTO
+### 5. FUNZIONI DI SUPPORTO (invariate)
 # ==============================================================================
 def normalize_query_for_comparison(query: str) -> str:
     """Normalizza una query per il confronto."""
-    if not query: return ""
-    query = re.sub(r'--.*?$', '', query, flags=re.MULTILINE)
+    if not query: 
+        return ""    
+    query = re.sub(r"--.*?,'", "", query, flags=re.MULTILINE)
     query = re.sub(r'\s+', ' ', query.strip(), flags=re.MULTILINE)
     return query.lower()
 
@@ -1025,29 +1483,47 @@ def find_best_columns_for_analysis(df: pd.DataFrame) -> Tuple[Optional[str], Opt
     categorical_cols = df.select_dtypes(include=['object', 'category']).columns
     numerical_cols = df.select_dtypes(include=np.number).columns
     
-    suitable_candidates = {col: df[col].nunique() for col in categorical_cols if is_hashable(df[col]) and 3 < df[col].nunique() < 50}
+    suitable_candidates = {col: df[col].nunique() 
+                         for col in categorical_cols 
+                         if is_hashable(df[col]) and 3 < df[col].nunique() < 50}
     best_group_by = min(suitable_candidates, key=suitable_candidates.get) if suitable_candidates else None
     
-    if not best_group_by: return None, None, 'count'
+    if not best_group_by: 
+        return None, None, 'count'
 
     possible_agg_cols = [col for col in numerical_cols if col != best_group_by]
     return (best_group_by, possible_agg_cols[0], 'sum') if possible_agg_cols else (best_group_by, 'count', 'count')
 
 def suggest_charts(df: pd.DataFrame) -> Dict[str, Dict[str, Any]]:
     """Suggerisce grafici appropriati per un DataFrame aggregato."""
-    if df is None or df.empty or len(df.columns) < 2: return {}
+    if df is None or df.empty or len(df.columns) < 2: 
+        return {}
     cat_col, num_col = df.columns[0], df.columns[1]
 
-    suggestions = {'bar_chart': {'type': 'bar', 'title': f'Classifica per {cat_col}', 'config': {'x': cat_col, 'y': num_col}}}
+    suggestions = {
+        'bar_chart': {
+            'type': 'bar', 
+            'title': f'Classifica per {cat_col}', 
+            'config': {'x': cat_col, 'y': num_col}
+        }
+    }
+    
     if df[cat_col].nunique() <= 10 and df[num_col].min() >= 0:
-        suggestions['pie_chart'] = {'type': 'pie', 'title': f'Distribuzione per {cat_col}', 'config': {'names': cat_col, 'values': num_col}}
+        suggestions['pie_chart'] = {
+            'type': 'pie', 
+            'title': f'Distribuzione per {cat_col}', 
+            'config': {'names': cat_col, 'values': num_col}
+        }
+    
     return suggestions
 
 def display_suggested_charts(df: pd.DataFrame, suggestions: Dict[str, Dict[str, Any]]):
     """Mostra i grafici suggeriti in un layout a tab."""
     if not suggestions: return
+    
     tab_names = [cfg['title'] for cfg in suggestions.values()]
     tabs = st.tabs(tab_names)
+    
     for tab, (key, config) in zip(tabs, suggestions.items()):
         with tab:
             if config['type'] == 'bar':
@@ -1056,97 +1532,22 @@ def display_suggested_charts(df: pd.DataFrame, suggestions: Dict[str, Dict[str, 
                 fig = px.pie(df, names=config['config']['names'], values=config['config']['values'], title=config['title'])
             st.plotly_chart(fig, use_container_width=True)
 
-def prepare_features_for_supervised_ml(df: pd.DataFrame, target_col: str) -> List[str]:
-    """
-    Prepara automaticamente la lista delle feature per algoritmi supervisionati.
-    Esclude il target e seleziona solo colonne appropriate.
-    
-    Args:
-        df: DataFrame con i dati
-        target_col: Nome della colonna target
-        
-    Returns:
-        List[str]: Lista delle colonne da usare come features
-    """
-    # Esclude il target e seleziona solo colonne numeriche o categoriche appropriate
-    feature_candidates = []
-    
-    for col in df.columns:
-        if col == target_col:
-            continue
-            
-        # Includi colonne numeriche
-        if pd.api.types.is_numeric_dtype(df[col]):
-            feature_candidates.append(col)
-        # Includi colonne categoriche con un numero ragionevole di categorie
-        elif df[col].dtype in ['object', 'category']:
-            n_unique = df[col].nunique()
-            if 1 < n_unique < min(50, len(df) * 0.5):  # Evita colonne troppo sparse
-                feature_candidates.append(col)
-    
-    return feature_candidates
-
-def validate_chart_config(chart_config: Dict[str, Any], df: pd.DataFrame) -> Tuple[bool, str]:
-    """
-    Valida una configurazione di grafico rispetto al DataFrame disponibile.
-    
-    Args:
-        chart_config: Configurazione del grafico
-        df: DataFrame con i dati
-        
-    Returns:
-        Tuple[bool, str]: (is_valid, error_message)
-    """
-    chart_type = chart_config.get('type', '')
-    x_config = chart_config.get('x')
-    y_config = chart_config.get('y')
-    
-    # Validazione del tipo di grafico
-    valid_types = ['barre', 'linee', 'torta', 'heatmap', 'serie temporale con picchi']
-    if chart_type not in valid_types:
-        return False, f"Tipo di grafico '{chart_type}' non supportato"
-    
-    # Validazione configurazione X
-    if not x_config:
-        return False, "Configurazione X mancante"
-    
-    if isinstance(x_config, list):
-        x_columns = x_config
-    else:
-        x_columns = [x_config]
-
-    for item in x_columns:
-        col_name = item[0] if isinstance(item, list) else item
-        
-        if col_name not in df.columns:
-            return False, f"Colonna '{col_name}' non trovata nel dataset"
-    
-    # Validazione configurazione Y per grafici che la richiedono
-    if chart_type in ['barre', 'linee', 'heatmap']:
-        if not y_config:
-            return False, f"Grafico '{chart_type}' richiede la specificazione dell'asse Y"
-        if y_config not in df.columns:
-            return False, f"Colonna Y '{y_config}' non trovata nel dataset"
-    
-    # Validazione specifica per grafici a torta
-    if chart_type == 'torta':
-        if len(x_columns) > 1:
-            return False, "I grafici a torta supportano solo una colonna per l'asse X"
-        if y_config and y_config not in df.columns:
-            return False, f"Colonna Y '{y_config}' non trovata nel dataset"
-    
-    return True, ""
-
-### 6. FUNZIONE PRINCIPALE DELLA PAGINA
+### 6. FUNZIONE PRINCIPALE DELLA PAGINA CON SPARK
 # ==============================================================================
 
 def show_analytics_page():
     """
-    Funzione principale per visualizzare la pagina di analisi.
+    Funzione principale per visualizzare la pagina di analisi con supporto Spark MLlib.
     """
     dataset = st.session_state.get('last_query_result')
     if dataset is None or not isinstance(dataset, pd.DataFrame) or dataset.empty:
         st.warning("Esegui una query SQL per caricare un dataset valido.")
+        return
+
+    # Verifica disponibilità Spark
+    spark = st.session_state.spark_manager.get_spark_session()
+    if spark is None:
+        st.error("❌ Spark session non disponibile. Assicurati che Spark sia inizializzato.")
         return
 
     query_text = st.session_state.get('last_query_text', '')
@@ -1155,50 +1556,131 @@ def show_analytics_page():
     
     if predefined_charts or predefined_ml:
         st.markdown("### 🎯 Analisi Predefinite")
+        
         if predefined_charts:
             ChartVisualizer().display_charts_from_config(dataset, predefined_charts)
+        
         if predefined_ml:
-            ml_processor = MLProcessor(dataset)
-            ml_visualizer = MLVisualizer(ml_processor)
-            with st.spinner("Esecuzione algoritmi ML..."):
-                ml_results = [ml_processor.execute_ml_config(cfg) for cfg in predefined_ml]
-            ml_visualizer.display_ml_results(ml_results, predefined_ml)
+            try:
+                spark_ml_processor = SparkMLProcessor(dataset, spark)
+                spark_ml_visualizer = SparkMLVisualizer(spark_ml_processor)
+                
+                with st.spinner("Esecuzione algoritmi Spark MLlib..."):
+                    ml_results = [spark_ml_processor.execute_ml_config(cfg) for cfg in predefined_ml]
+                
+                spark_ml_visualizer.display_ml_results(ml_results, predefined_ml)
+                
+            except Exception as e:
+                st.error(f"Errore nell'esecuzione ML con Spark: {e}")
         
         if not st.checkbox("Mostra anche analisi manuale/automatica", value=False):
             return
         st.divider()
 
-    st.markdown("## 🔬 Analisi Dati")
-    tab1, tab2 = st.tabs(["🤖 Analisi Automatica", "🔧 Analisi Manuale"])
+    st.markdown("## 🔬 Analisi Dati con Apache Spark")
+    tab1, tab2, tab3 = st.tabs(["🤖 Analisi Automatica", "🔧 Analisi Manuale", "⚡ Spark ML"])
 
     with tab1:
         group_by_col, agg_col, agg_type = find_best_columns_for_analysis(dataset)
         if group_by_col:
-            st.info(f"Analisi automatica suggerita: Aggregazione di **{agg_col}** per **{group_by_col}**.")
-            result_df = GeneralAnalytics(dataset).perform_aggregation(group_by_col, agg_col, agg_type)
-            if result_df is not None and not result_df.empty:
-                #result_df = result_df.head(20)
-                st.dataframe(result_df, use_container_width=True)
-                suggestions = suggest_charts(result_df)
-                display_suggested_charts(result_df, suggestions)
+            st.info(f"Analisi automatica suggerita: Aggregazione di **{agg_col}** per **{group_by_col}** con Spark SQL.")
+            
+            try:
+                analytics = GeneralAnalytics(dataset, spark)
+                result_df = analytics.perform_aggregation(group_by_col, agg_col, agg_type)
+                
+                if result_df is not None and not result_df.empty:
+                    st.dataframe(result_df, use_container_width=True)
+                    suggestions = suggest_charts(result_df)
+                    display_suggested_charts(result_df, suggestions)
+                else:
+                    st.warning("Nessun risultato dall'aggregazione Spark.")
+                    
+            except Exception as e:
+                st.error(f"Errore nell'analisi Spark: {e}")
         else:
             st.warning("Non è stato possibile identificare colonne per un'analisi automatica.")
 
     with tab2:
         st.markdown("### ⚙️ Configura la Tua Analisi")
         cols = st.columns(3)
-        group_by = cols[0].selectbox("Raggruppa per:", [c for c in dataset.columns if is_hashable(dataset[c])], key="manual_group")
-        agg_col = cols[1].selectbox("Aggrega colonna:", ['count'] + list(dataset.select_dtypes(include=np.number).columns), key="manual_agg_col")
-        agg_type = cols[2].selectbox("Tipo aggregazione:", ['sum', 'mean', 'max', 'min'] if agg_col != 'count' else ['count'], key="manual_agg_type")
         
-        if st.button("🚀 Genera Analisi", type="primary", use_container_width=True):
-            result_df = GeneralAnalytics(dataset).perform_aggregation(group_by, agg_col, agg_type)
-            if result_df is not None and not result_df.empty:
-                #st.dataframe(result_df.head(20), use_container_width=True)
-                st.dataframe(result_df, use_container_width=True)
-                #suggestions = suggest_charts(result_df.head(20))
-                suggestions = suggest_charts(result_df)
-                #display_suggested_charts(result_df.head(20), suggestions)
-                display_suggested_charts(result_df, suggestions)
-            else:
-                st.error("Nessun risultato trovato.")
+        hashable_cols = [c for c in dataset.columns if is_hashable(dataset[c])]
+        numeric_cols = ['count'] + list(dataset.select_dtypes(include=np.number).columns)
+        
+        group_by = cols[0].selectbox("Raggruppa per:", hashable_cols, key="manual_group")
+        agg_col = cols[1].selectbox("Aggrega colonna:", numeric_cols, key="manual_agg_col")
+        agg_type = cols[2].selectbox("Tipo aggregazione:", 
+                                   ['sum', 'mean', 'max', 'min'] if agg_col != 'count' else ['count'], 
+                                   key="manual_agg_type")
+        
+        if st.button("🚀 Genera Analisi con Spark", type="primary", use_container_width=True):
+            try:
+                analytics = GeneralAnalytics(dataset, spark)
+                result_df = analytics.perform_aggregation(group_by, agg_col, agg_type)
+                
+                if result_df is not None and not result_df.empty:
+                    st.dataframe(result_df, use_container_width=True)
+                    suggestions = suggest_charts(result_df)
+                    display_suggested_charts(result_df, suggestions)
+                else:
+                    st.error("Nessun risultato trovato.")
+                    
+            except Exception as e:
+                st.error(f"Errore nell'analisi Spark: {e}")
+
+    with tab3:
+        st.markdown("### ⚡ Machine Learning con Spark MLlib")
+        
+        try:
+            spark_ml_processor = SparkMLProcessor(dataset, spark)
+            available_algorithms = spark_ml_processor.get_algorithm_requirements()
+            
+            # Interface per configurare ML
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                selected_algorithm = st.selectbox(
+                    "Seleziona Algoritmo:",
+                    list(available_algorithms.keys()),
+                    key="spark_ml_algorithm"
+                )
+                
+                alg_info = available_algorithms[selected_algorithm]
+                st.info(f"Tipo: {alg_info['type'].title()} | Engine: {alg_info['engine']} | {alg_info['description']}")
+                
+            with col2:
+                available_features = [col for col in dataset.columns 
+                                    if dataset[col].dtype in ['int64', 'float64', 'object', 'category']]
+                
+                selected_features = st.multiselect(
+                    "Seleziona Features:",
+                    available_features,
+                    key="spark_ml_features"
+                )
+                
+                if alg_info['requires_target']:
+                    target_col = st.selectbox(
+                        "Seleziona Target:",
+                        [col for col in available_features if col not in selected_features],
+                        key="spark_ml_target"
+                    )
+                else:
+                    target_col = None
+            
+            if st.button("🎯 Esegui Algoritmo Spark ML", type="primary", use_container_width=True):
+                ml_config = {
+                    'algorithm': selected_algorithm,
+                    'features': selected_features,
+                    'target': target_col
+                }
+                
+                with st.spinner(f"Esecuzione {selected_algorithm} con Spark MLlib..."):
+                    result = spark_ml_processor.execute_ml_config(ml_config)
+                
+                spark_ml_visualizer = SparkMLVisualizer(spark_ml_processor)
+                spark_ml_visualizer.visualize_results(result, ml_config)
+                
+        except Exception as e:
+            st.error(f"Errore nell'inizializzazione Spark ML: {e}")
+            st.info("Assicurati che la sessione Spark sia attiva e configurata correttamente.")

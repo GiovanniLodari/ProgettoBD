@@ -50,18 +50,20 @@ class SparkManager:
                 st.error(f"Errore di permessi: non è stato possibile creare la cartella {event_log_dir}")
                 return None
             
+            num_cores = 14
+
             builder = SparkSession.builder \
                 .appName(Config.SPARK_APP_NAME) \
-                .master("local[*]") \
-                .config("spark.driver.memory", "4g") \
-                .config("spark.executor.memory", "4g") \
-                .config("spark.driver.maxResultSize", "4g") \
+                .master(f"local[{num_cores}]") \
+                .config("spark.driver.memory", "8g") \
+                .config("spark.executor.memory", "8g") \
+                .config("spark.driver.maxResultSize", "8g") \
                 .config("spark.sql.adaptive.enabled", "true") \
                 .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer") \
                 .config("spark.sql.execution.arrow.pyspark.enabled", "true") \
                 .config("spark.eventLog.enabled", "true") \
                 .config("spark.eventLog.dir", "/tmp/spark-events") \
-                .config("spark.sql.shuffle.partitions", "8") \
+                .config("spark.sql.shuffle.partitions", num_cores * 2) \
                 .config("spark.memory.fraction", "0.8")
 
             self.spark = builder.getOrCreate()

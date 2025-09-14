@@ -102,7 +102,29 @@
                     "y": null
                 }
             ],
-            "ml_algorithms": []
+            "ml_algorithms": [
+                {
+                    "algorithm": "Linear Regression",
+                    "features": [
+                        "NomeAmplificatore",
+                        "FollowerAmplificatore",
+                        "AmplificatoreVerificato",
+                        "MiPiaceDelRetweet",
+                        "RetweetDelRetweet",
+                        "RisposteDelRetweet",
+                        "CitazioniDelRetweet",
+                        "InterazioniTotaliDelRetweet",
+                        "NomeAutoreOriginale",
+                        "FollowerAutoreOriginale",
+                        "AutoreOriginaleVerificato",
+                        "MiPiaceOriginale",
+                        "RetweetOriginale",
+                        "RisposteOriginale",
+                        "CitazioniOriginale"
+                    ],
+                    "target": "InterazioniTotaliOriginale"
+                }
+            ]
         },
         "Tweet per giorno": {
             "query": "WITH DataConGiorno AS (\n   SELECT\n    TO_DATE(CONCAT(SUBSTRING(created_at, 5, 7),  SUBSTRING(created_at, 27, 4)), 'MMM dd yyyy') AS Giorno,\n      retweeted_status,\n      CONCAT_WS(', ',\n         IF(LOWER(COALESCE(retweeted_status.full_text, retweeted_status.text)) LIKE '%hurricane%', 'hurricane', NULL),\n         IF(LOWER(COALESCE(retweeted_status.full_text, retweeted_status.text)) LIKE '%emergency%', 'emergency', NULL),\n         IF(LOWER(COALESCE(retweeted_status.full_text, retweeted_status.text)) LIKE '%fema%', 'fema', NULL),\n         IF(LOWER(COALESCE(retweeted_status.full_text, retweeted_status.text)) LIKE '%donation%', 'donation', NULL),\n         IF(LOWER(COALESCE(retweeted_status.full_text, retweeted_status.text)) LIKE '%disaster%', 'disaster', NULL),\n         IF(LOWER(COALESCE(retweeted_status.full_text, retweeted_status.text)) LIKE '%storm%', 'storm', NULL),\n         IF(LOWER(COALESCE(retweeted_status.full_text, retweeted_status.text)) LIKE '%relief%', 'relief', NULL),\n         IF(LOWER(COALESCE(retweeted_status.full_text, retweeted_status.text)) LIKE '%rescue%', 'rescue', NULL),\n         IF(LOWER(COALESCE(retweeted_status.full_text, retweeted_status.text)) LIKE '%damage%', 'damage', NULL),\n         IF(LOWER(COALESCE(retweeted_status.full_text, retweeted_status.text)) LIKE '%flood%', 'flood', NULL),\n         IF(LOWER(COALESCE(retweeted_status.full_text, retweeted_status.text)) LIKE '%wind%', 'wind', NULL),\n         IF(LOWER(COALESCE(retweeted_status.full_text, retweeted_status.text)) LIKE '%volunteer%', 'volunteer', NULL),\n         IF(LOWER(COALESCE(retweeted_status.full_text, retweeted_status.text)) LIKE '%support%', 'support', NULL),\n         IF(LOWER(COALESCE(retweeted_status.full_text, retweeted_status.text)) LIKE '%help%', 'help', NULL),\n         IF(LOWER(COALESCE(retweeted_status.full_text, retweeted_status.text)) LIKE '%victim%', 'victim', NULL)\n      ) AS KeywordTrovate\nFROM disasters\nWHERE \n      retweeted_status IS NOT NULL AND created_at IS NOT NULL\n      AND COALESCE(retweeted_status.full_text, retweeted_status.text) RLIKE '(?i)hurricane|emergency|FEMA|donation|disaster|storm|relief|rescue|damage|flood|wind|volunteer|support|help|victim'\n)\nSELECT\n    Giorno,\n   retweeted_status.user.name,\n   retweeted_status.user.screen_name,\n   MAX(retweeted_status.user.followers_count) AS Followers,\n   COUNT(retweeted_status.id_str) AS NumeroTweet,\n   SUM(retweeted_status.favorite_count) AS Mi_Piace_Totali\nFROM\n   DataConGiorno\nGROUP BY\n   Giorno,\n   retweeted_status.user.name,\n   retweeted_status.user.screen_name\nORDER BY\n   Giorno ASC, Mi_Piace_Totali DESC;",

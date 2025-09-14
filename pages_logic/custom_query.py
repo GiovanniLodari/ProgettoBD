@@ -386,7 +386,7 @@ def show_simplified_editor_tab(query_engine, dataset):
                                             )
                                         else:
                                             st.markdown(
-                                                f"Grafico a {chart_type}\n"
+                                                f"- Grafico a {chart_type}\n"
                                                 f"  - x: `{x_axis}`"
                                             )
                                     elif chart_type == "Heatmap":
@@ -856,23 +856,24 @@ def show_save_template_sidebar(query_text: str, mode: str = 'new', existing_data
             })
             st.rerun()
 
-        ml_algorithms = {
-            # Clustering
-            "K-Means": {"type": "clustering"},
-            "DBSCAN": {"type": "clustering"},
-            
-            # Supervisionati
-            "Random Forest": {"type": "supervised"},
-            "XGBoost": {"type": "supervised"},
-            "Linear Regression": {"type": "supervised"},
-            "Logistic Regression": {"type": "supervised"},
-            "SVM": {"type": "supervised"},
 
-            # Anomaly Detection
-            "Isolation Forest": {"type": "anomaly"},
-            "STL Decomposition": {"type": "anomaly"},
-            "Prophet": {"type": "anomaly"}
+        ml_algorithms = {
+            # Spark MLlib - Clustering
+            "K-Means": {"type": "clustering", "engine": "spark"},
+            "Bisecting K-Means": {"type": "clustering", "engine": "spark"},
+            
+            # Spark MLlib - Classificazione  
+            "Random Forest Classifier": {"type": "supervised", "engine": "spark"},
+            "GBT Classifier": {"type": "supervised", "engine": "spark"},
+            
+            # Spark MLlib - Regressione
+            "Linear Regression": {"type": "supervised", "engine": "spark"},
+            
+            # Scikit-learn - Altri algoritmi
+            "DBSCAN": {"type": "clustering", "engine": "sklearn"},
+            "Isolation Forest": {"type": "anomaly", "engine": "sklearn"}
         }
+
         
         # Visualizza tutti gli algoritmi ML configurati
         if st.session_state.get('ml_config', []):
