@@ -27,6 +27,8 @@ from pyspark.sql.types import DoubleType
 # Algoritmi di ML non supportati da Spark
 from sklearn.ensemble import IsolationForest
 from sklearn.cluster import DBSCAN
+from sklearn.preprocessing import LabelEncoder
+from sklearn.preprocessing import StandardScaler as SklearnStandardScaler
 
 # Import per utils
 from utils.utils import get_twitter_query_templates
@@ -377,6 +379,8 @@ class SparkMLProcessor:
         
         self.spark_df = None
         self._connection_retries = 3
+        self.label_encoders = {}
+        self.scaler = SklearnStandardScaler()
         
     def get_algorithm_requirements(self) -> Dict[str, Dict[str, Any]]:
         """Restituisce i requisiti per ogni algoritmo (sia Spark che scikit-learn)."""
@@ -687,7 +691,6 @@ class SparkMLProcessor:
             best_model = None
             successful_runs = 0
             
-            st.info(f"Testando K-Means con k da 2 a {max_k} su {total_rows} righe...")
             progress_bar = st.progress(0)
             
             for i, k in enumerate(k_values):
@@ -757,9 +760,7 @@ class SparkMLProcessor:
             
             # Cleanup
             df_prepared.unpersist()
-            
-            st.success(f"K-Means completato! K ottimale: {best_k}, Silhouette Score: {best_score:.3f}")
-            
+                        
             return {
                 'algorithm': 'K-Means',
                 'labels': labels,
@@ -802,7 +803,6 @@ class SparkMLProcessor:
             best_model = None
             successful_runs = 0
             
-            st.info(f"Testando Bisecting K-Means con k da 2 a {max_k}...")
             progress_bar = st.progress(0)
             
             for i, k in enumerate(k_values):
@@ -868,9 +868,7 @@ class SparkMLProcessor:
             
             # Cleanup
             df_prepared.unpersist()
-            
-            st.success(f"Bisecting K-Means completato! K: {best_k}, Score: {best_score:.3f}")
-            
+                        
             return {
                 'algorithm': 'Bisecting K-Means',
                 'labels': labels,
@@ -1006,9 +1004,7 @@ class SparkMLProcessor:
         
         best_params = cv_model.bestModel.extractParamMap()
         best_params_dict = {str(param): value for param, value in best_params.items()}
-        
-        st.success(f"{algorithm} completato! Accuracy: {accuracy:.3f}")
-        
+                
         return {
             'algorithm': algorithm,
             'accuracy': accuracy,
@@ -1079,7 +1075,6 @@ class SparkMLProcessor:
         best_params = {}
         best_labels = None
         
-        st.info(f"Ottimizzazione DBSCAN: testando {len(eps_values) * len(min_samples_values)} combinazioni...")
         progress_bar = st.progress(0)
         
         total_combinations = len(eps_values) * len(min_samples_values)
@@ -1111,10 +1106,6 @@ class SparkMLProcessor:
         if best_labels is not None:
             n_clusters = len(set(best_labels)) - (1 if -1 in best_labels else 0)
             n_noise = list(best_labels).count(-1)
-            
-            st.success(f"Ottimizzazione DBSCAN completata! Silhouette Score: {best_score:.3f}")
-            st.info(f"Migliori parametri: {best_params}")
-            st.info(f"Cluster trovati: {n_clusters}, Punti noise: {n_noise}")
             
             return {
                 'algorithm': 'DBSCAN',
@@ -1159,10 +1150,7 @@ class SparkMLProcessor:
         final_model.fit(X)
         is_anomaly = final_model.predict(X) == -1
         anomaly_scores = final_model.score_samples(X)
-        
-        st.success(f"Isolation Forest completato! Anomalie rilevate: {is_anomaly.sum()}")
-        st.info(f"Migliori parametri: {best_params}")
-        
+                
         return {
             'algorithm': 'Isolation Forest',
             'is_anomaly': is_anomaly,
@@ -1203,6 +1191,39 @@ class SparkMLProcessor:
                 return False, f"La colonna target '{target}' non può essere inclusa nelle features"
         
         return True, ""
+    
+    def _prepare_data_robust(self, features: List[str], target: Optional[str] = None) -> Tuple[np.ndarray, Optional[np.ndarray], Dict[str, Any]]:
+        """Prepara i dati in modo robusto."""
+        cols_to_use = features + ([target] if target else [])
+        df_clean = self.df[cols_to_use].dropna().copy()
+
+        if df_clean.empty:
+            raise ValueError("Nessun dato valido dopo la rimozione dei valori mancanti.")
+
+        X_processed = df_clean[features]
+        for col in features:
+            if X_processed[col].dtype == 'object' or X_processed[col].dtype.name == 'category':
+                le = LabelEncoder()
+                X_processed[col] = le.fit_transform(X_processed[col].astype(str))
+                self.label_encoders[col] = le
+
+        X_scaled = self.scaler.fit_transform(X_processed)
+
+        y_processed = None
+        target_type = None
+        if target:
+            y_series = df_clean[target]
+            if y_series.dtype == 'object' or y_series.nunique() <= 10:
+                target_type = 'classification'
+                le = LabelEncoder()
+                y_processed = le.fit_transform(y_series.astype(str))
+                self.label_encoders[target] = le
+            else:
+                target_type = 'regression'
+                y_processed = y_series.values
+
+        metadata = {'target_type': target_type}
+        return X_scaled, y_processed, metadata
     
     def execute_ml_config(self, ml_config: Dict[str, Any]) -> Dict[str, Any]:
         """
