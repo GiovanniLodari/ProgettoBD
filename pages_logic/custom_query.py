@@ -761,8 +761,13 @@ def show_save_template_sidebar(query_text: str, mode: str = 'new', existing_data
             key="sidebar_template_name"
         )
         
-        with st.expander("📝 Query da salvare", expanded=False):
-            st.code(current_query, language="sql")
+        modified_query = ""
+        with st.expander("📝 Query", expanded=False):
+            if mode == 'edit' and existing_data:
+                modified_query = st.text_area(label="Query da modificare:", value=query_to_save, height=150, disabled=False)
+            else:
+                modified_query = current_query
+                st.code(current_query, language="sql")
 
         try:
             columns = get_query_columns(current_query, st.session_state.spark_manager.get_spark_session())
@@ -1036,7 +1041,7 @@ def show_save_template_sidebar(query_text: str, mode: str = 'new', existing_data
             if category not in templates_to_save:
                 templates_to_save[category] = {}
 
-            current_query_formatted = format_sql_for_json(current_query)
+            current_query_formatted = format_sql_for_json(modified_query)
 
             templates_to_save[category][template_name] = {
                 "query": current_query_formatted,
