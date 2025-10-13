@@ -454,15 +454,13 @@ def show_simplified_editor_tab(query_engine, dataset):
                 # --- Colonna 4: Pulsanti modifica/elimina ---
                 with col_edit:
                     #st.write("") # Spazio per allineare
-
-                    if st.button("▶️", key=f"template_{category}_{name}", help="Use query", width="stretch"):
+                    execute_btn = st.button("▶️", key=f"template_{category}_{name}", help="Use query", width="stretch")
+                    if execute_btn:
                         st.session_state.selected_template = query_text
-                        st.success("✅ Template copiato!")
-                        st.rerun()
+                        st.session_state.run_query = True
                     
                     # Pulsante modifica
                     if st.button("✏️", key=f"edit_{category}_{name}", help="Modifica query", width="stretch"):
-                        # Prepara i dati per la modifica
                         edit_data = {
                             'category': category,
                             'name': name,
@@ -531,10 +529,11 @@ def show_simplified_editor_tab(query_engine, dataset):
                     st.info(f"💡 Suggerimento: {validation['suggestion']}")
 
     # Esecuzione query
-    if execute_button:
+    if execute_button or st.session_state.get('run_query', False):
         if not query_text.strip():
             st.error("⚠️ Inserisci una query SQL valida")
             return
+        st.session_state.run_query = False
         
         with st.spinner("⚡ Esecuzione query in corso..."):
             result = query_engine.execute_custom_query_safe(query_text, result_limit)
