@@ -6,7 +6,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 import pandas as pd
 from src.analytics import QueryEngine
-from src.visualizations import GeneralVisualizations
+#from src.visualizations import GeneralVisualizations
 from src.config import Config, DatabaseConfig
 from pyspark.sql import functions as F
 from pyspark.sql.types import *
@@ -375,7 +375,8 @@ def show_simplified_editor_tab(query_engine, dataset):
                                 for chart in charts_config:
                                     chart_type = chart.get('type', 'N/D')
                                     x_axis = chart.get('x', 'N/D')
-                                    y_axis = chart.get('y', '')
+                                    y_axis = chart.get('y', 'N/D')
+                                    z_axis = chart.get('z', 'N/D')
                                     
                                     if chart_type in ["Barre", "Linee"]:
                                         if y_axis:
@@ -390,16 +391,27 @@ def show_simplified_editor_tab(query_engine, dataset):
                                                 f"  - x: `{x_axis}`"
                                             )
                                     elif chart_type == "Heatmap":
-                                        if y_axis:
+                                        agg_func = chart.get('agg', 'N/D') 
+                                        if z_axis != 'N/D'  and agg_func != 'N/D':
+                                            st.markdown(
+                                                f"- {chart_type}\n"
+                                                f"  - x: `{x_axis}`\n"
+                                                f"  - y: `{y_axis}`\n"
+                                                f"  - z: `{z_axis}`\n"
+                                                f"  - Aggregazione: `{agg_func}`"
+                                            )
+                                        elif agg_func == 'N/D' and z_axis != 'N/D':
+                                            st.markdown(
+                                                f"- {chart_type}\n"
+                                                f"  - x: `{x_axis}`\n"
+                                                f"  - y: `{y_axis}`\n"
+                                                f"  - z: `{z_axis}`"
+                                            )
+                                        else:
                                             st.markdown(
                                                 f"- {chart_type}\n"
                                                 f"  - x: `{x_axis}`\n"
                                                 f"  - y: `{y_axis}`"
-                                            )
-                                        else:
-                                            st.markdown(
-                                                f"{chart_type}\n"
-                                                f"  - x: `{x_axis}`"
                                             )
                                     else:
                                         if y_axis:
@@ -410,7 +422,7 @@ def show_simplified_editor_tab(query_engine, dataset):
                                             )
                                         else:
                                             st.markdown(
-                                                f"Grafico a {chart_type}\n"
+                                                f"- Grafico a {chart_type}\n"
                                                 f"  - Categoria: `{x_axis}`"
                                             )
                         else:
@@ -601,8 +613,11 @@ def show_simplified_editor_tab(query_engine, dataset):
             if len(display_data) > display_limit:
                 st.info(f"Mostrando {display_limit} di {len(display_data)} righe.")
 
-        with st.expander("📊 Visualizza Grafici e Analisi"):
-            show_analytics_page()
+        if query_text and has_predefined_analytics(query_text):
+            with st.expander("🔬 Analisi Dati"):
+                show_analytics_page()
+        else:
+            st.info("ℹ️ Non ci sono grafici o algoritmi di ML personalizzati: usa il pulsante 'Salva Query' per aggiungere grafici e analisi.")
 
 
 def show_delete_confirmation_dialog(category: str, name: str):
@@ -837,6 +852,44 @@ def show_save_template_sidebar(query_text: str, mode: str = 'new', existing_data
                             key=f"sidebar_y_col_{i}"
                         )
                         cfg["y"] = new_y if new_y != "" else None
+                        if new_type == "Heatmap":
+                            z_label = "Valore (opzionale):"
+                            z_options = [""] + columns
+
+                            z_index = 0
+                            if cfg.get("z") and cfg["z"] in z_options:
+                                z_index = z_options.index(cfg["z"])
+
+                            new_z = st.selectbox(
+                                z_label,
+                                z_options,
+                                index=z_index,
+                                key=f"sidebar_z_col_{i}",
+                                help="Seleziona la colonna per il valore/colore della heatmap. Lascia vuoto per una heatmap di frequenza."
+                            )
+                            cfg["z"] = new_z if new_z != "" else None
+                            if new_z:
+                                agg_label = "Metodo di aggregazione:"
+                                agg_options = ['mean', 'max', 'sum', 'count']
+                                
+                                default_agg = cfg.get('agg', 'max')
+                                agg_index = agg_options.index(default_agg) if default_agg in agg_options else 0
+                                
+                                new_agg = st.selectbox(
+                                    agg_label,
+                                    agg_options,
+                                    index=agg_index,
+                                    key=f"sidebar_agg_func_{i}",
+                                    help="Come aggregare più valori che cadono nella stessa cella (x, y)."
+                                )
+                                cfg['agg'] = new_agg
+                            elif 'agg' in cfg:
+                                del cfg['agg']
+                        else:
+                            if 'z' in cfg:
+                                del cfg['z']
+                            if 'agg' in cfg:
+                                del cfg['agg']
                     else:
                         st.warning("⚠️ Impossibile determinare le colonne dalla query.")
                     
@@ -865,14 +918,13 @@ def show_save_template_sidebar(query_text: str, mode: str = 'new', existing_data
         ml_algorithms = {
             # Spark MLlib - Clustering
             "K-Means": {"type": "clustering", "engine": "spark"},
-            "Bisecting K-Means": {"type": "clustering", "engine": "spark"},
             
             # Spark MLlib - Classificazione  
-            "Random Forest Classifier": {"type": "supervised", "engine": "spark"},
-            "GBT Classifier": {"type": "supervised", "engine": "spark"},
+            #"Random Forest Classifier": {"type": "supervised", "engine": "spark"},
+            #"GBT Classifier": {"type": "supervised", "engine": "spark"},
             
             # Spark MLlib - Regressione
-            "Linear Regression": {"type": "supervised", "engine": "spark"},
+            #"Linear Regression": {"type": "supervised", "engine": "spark"},
             
             # Scikit-learn - Altri algoritmi
             "DBSCAN": {"type": "clustering", "engine": "sklearn"},
@@ -1097,7 +1149,42 @@ def open_save_form(query_text: str, mode: str = 'new', existing_data: Dict = Non
     force_open_sidebar()
     #st.rerun()
 
+def normalize_query_for_comparison(query: str) -> str:
+    """Normalizza una query per il confronto."""
+    if not query: 
+        return ""
+    # Ho corretto la tua regex per rimuovere i commenti SQL in modo più robusto
+    query = re.sub(r"--.*", "", query)
+    query = re.sub(r'\s+', ' ', query.strip())
+    return query.lower()
 
+def find_predefined_config(query_text: str, config_key: str) -> List[Dict[str, Any]]:
+    """Trova configurazioni predefinite (grafici o ML) per una query."""
+    if not query_text.strip(): return []
+    query_normalized = normalize_query_for_comparison(query_text)
+    
+    try:
+        all_templates = get_twitter_query_templates()
+        for category, queries in all_templates.items():
+            for name, query_data in queries.items():
+                if isinstance(query_data, dict) and 'query' in query_data:
+                    template_normalized = normalize_query_for_comparison(query_data.get('query', ''))
+                    if query_normalized == template_normalized:
+                        return query_data.get(config_key, [])
+    except Exception as e:
+        print(f"Errore nel caricamento delle configurazioni predefinite: {e}")
+    return []
+
+def has_predefined_analytics(query_text: str) -> bool:
+    """
+    Funzione helper che controlla se esistono configurazioni di grafici O ML 
+    per una data query. È più efficiente perché si ferma alla prima trovata.
+    """
+    if find_predefined_config(query_text, 'charts'):
+        return True
+    if find_predefined_config(query_text, 'ml_algorithms'):
+        return True
+    return False
 
 def is_numeric_column(column_name: str, query: str = None, spark_session=None) -> bool:
     """

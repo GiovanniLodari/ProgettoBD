@@ -1,4 +1,43 @@
 {
+    "🔍 Query di Base": {
+        "Schema tabella": {
+            "query": "DESCRIBE disasters",
+            "charts": []
+        },
+        "Bot detection": {
+            "query": "WITH stats AS (\n    SELECT\n    user.screen_name   AS Username,\n        COUNT(*)           AS Num_Tweet,\n        AVG(favorite_count) AS Media_Like_Ricevuti,\n        AVG(retweet_count)  AS ReTweet_Da_Altri,\n        SUM(CASE WHEN retweeted_status.id_str IS NOT NULL THEN 1 ELSE 0 END) AS Num_ReTweet,\n        COUNT(*) AS Num_Tot,\n        MAX(user.followers_count) AS Followers, \n        MAX(user.friends_count)   AS Following\nFROM disasters\nWHERE user.id_str IS NOT NULL\nGROUP BY user.screen_name\n)\nSELECT\n    Username,\n    Num_Tweet,\n    Media_Like_Ricevuti,\n    ReTweet_Da_Altri,\n    Num_ReTweet,\n    Num_ReTweet* 1.0 / Num_Tot AS Perc_Retweet,\n    Followers,\n    Following,\n    CASE \n        WHEN Following > 0 THEN (Followers * 1.0 / Following)\n        ELSE NULL\n    END AS Ratio_Followers_Following\nFROM stats\nWHERE Num_Tweet > 100                -- alta attività\n  AND Media_Like_Ricevuti < 1                 -- pochissimi like\n  AND ReTweet_Da_Altri < 1              -- pochissimi retweet\n  AND (Num_ReTweet* 1.0 / Num_Tot) > 0.9   -- quasi solo retweet\n  AND (Following > 0 AND (Followers * 1.0 / Following) < 0.1) -- segue molti, seguito da pochi\nORDER BY Num_Tweet DESC;",
+            "charts": [
+                {
+                    "type": "Barre",
+                    "x": "Username",
+                    "y": "Ratio_Followers_Following"
+                }
+            ],
+            "ml_algorithms": []
+        },
+        "Frequenza parole": {
+            "query": "WITH TweetFiltrati AS (\n   SELECT\n    COALESCE(retweeted_status.full_text, retweeted_status.text) AS testo_completo\nFROM disasters\nWHERE\n      retweeted_status IS NOT NULL\n      AND COALESCE(retweeted_status.full_text, retweeted_status.text) RLIKE '(?i)hurricane|emergency|help'\n),\nParoleSingole AS (\n   SELECT\n    explode(split(lower(testo_completo), '\\\\s+')) AS parola\nFROM TweetFiltrati\n)\nSELECT\n    parola_pulita,\n   COUNT(*) AS frequenza\nFROM (\n   SELECT\n    regexp_replace(parola, '[^a-zA-Zàèéìòù]', '') AS parola_pulita\nFROM ParoleSingole\n)\nWHERE\n   parola_pulita != ''\n   AND parola_pulita NOT IN (\n      'a', 'an', 'the', 'is', 'in', 'on', 'for', 'with', 'of', 'to', 'and', 'rt', 'I', 'you', 'he', 'she', 'our', 'are', 'this', 'by', 'at', 'as', 'is', 'we', 'who', 'it', 'all', 'have', 'so', 'about', 'just'\n   )\nGROUP BY parola_pulita\nORDER BY frequenza DESC",
+            "charts": [
+                {
+                    "type": "Barre",
+                    "x": "parola_pulita",
+                    "y": "frequenza"
+                }
+            ],
+            "ml_algorithms": []
+        },
+        "Categorie utenti": {
+            "query": "WITH UtentiCategorizzati AS (\n   SELECT\n    retweeted_status,\n      CASE\n         WHEN LOWER(retweeted_status.user.description) RLIKE 'journalist|reporter|media|news'\n            THEN 'Media/Giornalista'\n         WHEN LOWER(retweeted_status.user.description) RLIKE 'volunteer|rescue|relief|red cross'\n            THEN 'Volontario/Soccorritore'\n         WHEN LOWER(retweeted_status.user.description) RLIKE 'official|government|department|emergency management|fema'\n            THEN 'Governo/Ufficiale'\n         WHEN LOWER(retweeted_status.user.description) RLIKE 'expert|scientist|researcher|meteorologist'\n            THEN 'Esperto/Scienziato'\n         WHEN LOWER(retweeted_status.user.description) RLIKE 'organization|ngo|non-profit'\n            THEN 'Organizzazione/ONG'\n         ELSE 'Non Specificato'\n      END AS CategoriaUtente\nFROM disasters\nWHERE\n      retweeted_status IS NOT NULL\n      AND retweeted_status.user.description IS NOT NULL\n)\nSELECT\n    CategoriaUtente,\n   COUNT(DISTINCT retweeted_status.user.screen_name) AS NumeroUtentiUnici,\n   COUNT(retweeted_status.id_str) AS NumeroTweetTotali\nFROM UtentiCategorizzati\nWHERE CategoriaUtente != 'Non Specificato'\nGROUP BY CategoriaUtente\nORDER BY NumeroUtentiUnici DESC;",
+            "charts": [
+                {
+                    "type": "Torta",
+                    "x": "CategoriaUtente",
+                    "y": "NumeroUtentiUnici"
+                }
+            ],
+            "ml_algorithms": []
+        }
+    },
     "📊 Analisi Tweet": {
         "Distribuzione tipi di tweet": {
             "query": "SELECT\n    CASE\n\t\tWHEN retweeted_status IS NOT NULL THEN 'Retweet'\n\t\tWHEN quoted_status_id_str IS NOT NULL THEN 'Quote Tweet'\n\t\tWHEN reply_count > 0 THEN 'Tweet con Reply'\n\t\tELSE 'Tweet Originale'\n\tEND AS tweet_type,\n\tCOUNT(*) as count\nFROM disasters\nGROUP BY 1\nORDER BY count DESC",
@@ -44,12 +83,16 @@
                 {
                     "type": "Heatmap",
                     "x": "Latitude",
-                    "y": "Longitude"
+                    "y": "Longitude",
+                    "z": "PunteggioUrgenza",
+                    "agg": "max"
                 },
                 {
                     "type": "Heatmap",
                     "x": "Luogo",
-                    "y": "PunteggioUrgenza"
+                    "y": "Data",
+                    "z": "PunteggioUrgenza",
+                    "agg": "sum"
                 }
             ],
             "ml_algorithms": [
@@ -92,29 +135,7 @@
                     "y": null
                 }
             ],
-            "ml_algorithms": [
-                {
-                    "algorithm": "Linear Regression",
-                    "features": [
-                        "NomeAmplificatore",
-                        "FollowerAmplificatore",
-                        "AmplificatoreVerificato",
-                        "MiPiaceDelRetweet",
-                        "RetweetDelRetweet",
-                        "RisposteDelRetweet",
-                        "CitazioniDelRetweet",
-                        "InterazioniTotaliDelRetweet",
-                        "NomeAutoreOriginale",
-                        "FollowerAutoreOriginale",
-                        "AutoreOriginaleVerificato",
-                        "MiPiaceOriginale",
-                        "RetweetOriginale",
-                        "RisposteOriginale",
-                        "CitazioniOriginale"
-                    ],
-                    "target": "InterazioniTotaliOriginale"
-                }
-            ]
+            "ml_algorithms": []
         },
         "Tweet giornalieri per utente": {
             "query": "WITH DataConGiorno AS (\n   SELECT\n    TO_DATE(CONCAT(SUBSTRING(created_at, 5, 7),  SUBSTRING(created_at, 27, 4)), 'MMM dd yyyy') AS Giorno,\n      retweeted_status,\n      CONCAT_WS(', ',\n         IF(LOWER(COALESCE(retweeted_status.full_text, retweeted_status.text)) LIKE '%hurricane%', 'hurricane', NULL),\n         IF(LOWER(COALESCE(retweeted_status.full_text, retweeted_status.text)) LIKE '%emergency%', 'emergency', NULL),\n         IF(LOWER(COALESCE(retweeted_status.full_text, retweeted_status.text)) LIKE '%fema%', 'fema', NULL),\n         IF(LOWER(COALESCE(retweeted_status.full_text, retweeted_status.text)) LIKE '%donation%', 'donation', NULL),\n         IF(LOWER(COALESCE(retweeted_status.full_text, retweeted_status.text)) LIKE '%disaster%', 'disaster', NULL),\n         IF(LOWER(COALESCE(retweeted_status.full_text, retweeted_status.text)) LIKE '%storm%', 'storm', NULL),\n         IF(LOWER(COALESCE(retweeted_status.full_text, retweeted_status.text)) LIKE '%relief%', 'relief', NULL),\n         IF(LOWER(COALESCE(retweeted_status.full_text, retweeted_status.text)) LIKE '%rescue%', 'rescue', NULL),\n         IF(LOWER(COALESCE(retweeted_status.full_text, retweeted_status.text)) LIKE '%damage%', 'damage', NULL),\n         IF(LOWER(COALESCE(retweeted_status.full_text, retweeted_status.text)) LIKE '%flood%', 'flood', NULL),\n         IF(LOWER(COALESCE(retweeted_status.full_text, retweeted_status.text)) LIKE '%wind%', 'wind', NULL),\n         IF(LOWER(COALESCE(retweeted_status.full_text, retweeted_status.text)) LIKE '%volunteer%', 'volunteer', NULL),\n         IF(LOWER(COALESCE(retweeted_status.full_text, retweeted_status.text)) LIKE '%support%', 'support', NULL),\n         IF(LOWER(COALESCE(retweeted_status.full_text, retweeted_status.text)) LIKE '%help%', 'help', NULL),\n         IF(LOWER(COALESCE(retweeted_status.full_text, retweeted_status.text)) LIKE '%victim%', 'victim', NULL)\n      ) AS KeywordTrovate\nFROM disasters\nWHERE \n      retweeted_status IS NOT NULL AND created_at IS NOT NULL\n      AND COALESCE(retweeted_status.full_text, retweeted_status.text) RLIKE '(?i)hurricane|emergency|FEMA|donation|disaster|storm|relief|rescue|damage|flood|wind|volunteer|support|help|victim'\n)\nSELECT\n    Giorno,\n   retweeted_status.user.name,\n   retweeted_status.user.screen_name,\n   MAX(retweeted_status.user.followers_count) AS Followers,\n   COUNT(retweeted_status.id_str) AS NumeroTweet,\n   SUM(retweeted_status.favorite_count) AS Mi_Piace_Totali\nFROM\n   DataConGiorno\nGROUP BY\n   Giorno,\n   retweeted_status.user.name,\n   retweeted_status.user.screen_name\nORDER BY\n   Giorno ASC, Mi_Piace_Totali DESC;",
@@ -123,60 +144,6 @@
                     "type": "Heatmap",
                     "x": "Giorno",
                     "y": "name"
-                }
-            ],
-            "ml_algorithms": []
-        }
-    },
-    "🔍 Query di Base": {
-        "Schema tabella": {
-            "query": "DESCRIBE disasters",
-            "charts": []
-        },
-        "Bot detection": {
-            "query": "WITH stats AS (\n    SELECT\n    user.screen_name   AS Username,\n        COUNT(*)           AS Num_Tweet,\n        AVG(favorite_count) AS Media_Like_Ricevuti,\n        AVG(retweet_count)  AS ReTweet_Da_Altri,\n        SUM(CASE WHEN retweeted_status.id_str IS NOT NULL THEN 1 ELSE 0 END) AS Num_ReTweet,\n        COUNT(*) AS Num_Tot,\n        MAX(user.followers_count) AS Followers, \n        MAX(user.friends_count)   AS Following\nFROM disasters\nWHERE user.id_str IS NOT NULL\nGROUP BY user.screen_name\n)\nSELECT\n    Username,\n    Num_Tweet,\n    Media_Like_Ricevuti,\n    ReTweet_Da_Altri,\n    Num_ReTweet,\n    Num_ReTweet* 1.0 / Num_Tot AS Perc_Retweet,\n    Followers,\n    Following,\n    CASE \n        WHEN Following > 0 THEN (Followers * 1.0 / Following)\n        ELSE NULL\n    END AS Ratio_Followers_Following\nFROM stats\nWHERE Num_Tweet > 100                -- alta attività\n  AND Media_Like_Ricevuti < 1                 -- pochissimi like\n  AND ReTweet_Da_Altri < 1              -- pochissimi retweet\n  AND (Num_ReTweet* 1.0 / Num_Tot) > 0.9   -- quasi solo retweet\n  AND (Following > 0 AND (Followers * 1.0 / Following) < 0.1) -- segue molti, seguito da pochi\nORDER BY Num_Tweet DESC;",
-            "charts": [
-                {
-                    "type": "Barre",
-                    "x": "Username",
-                    "y": "Ratio_Followers_Following"
-                }
-            ],
-            "ml_algorithms": [
-                {
-                    "algorithm": "Random Forest Classifier",
-                    "features": [
-                        "Num_Tweet",
-                        "Media_Like_Ricevuti",
-                        "ReTweet_Da_Altri",
-                        "Num_ReTweet",
-                        "Perc_Retweet",
-                        "Followers",
-                        "Following",
-                        "Ratio_Followers_Following"
-                    ],
-                    "target": "Username"
-                }
-            ]
-        },
-        "Frequenza parole": {
-            "query": "WITH TweetFiltrati AS (\n   SELECT\n    COALESCE(retweeted_status.full_text, retweeted_status.text) AS testo_completo\nFROM disasters\nWHERE\n      retweeted_status IS NOT NULL\n      AND COALESCE(retweeted_status.full_text, retweeted_status.text) RLIKE '(?i)hurricane|emergency|help'\n),\nParoleSingole AS (\n   SELECT\n    explode(split(lower(testo_completo), '\\\\s+')) AS parola\nFROM TweetFiltrati\n)\nSELECT\n    parola_pulita,\n   COUNT(*) AS frequenza\nFROM (\n   SELECT\n    regexp_replace(parola, '[^a-zA-Zàèéìòù]', '') AS parola_pulita\nFROM ParoleSingole\n)\nWHERE\n   parola_pulita != ''\n   AND parola_pulita NOT IN (\n      'a', 'an', 'the', 'is', 'in', 'on', 'for', 'with', 'of', 'to', 'and', 'rt', 'I', 'you', 'he', 'she', 'our', 'are', 'this', 'by', 'at', 'as', 'is', 'we', 'who', 'it', 'all', 'have', 'so', 'about', 'just'\n   )\nGROUP BY parola_pulita\nORDER BY frequenza DESC",
-            "charts": [
-                {
-                    "type": "Barre",
-                    "x": "parola_pulita",
-                    "y": "frequenza"
-                }
-            ],
-            "ml_algorithms": []
-        },
-        "Categorie utenti": {
-            "query": "WITH UtentiCategorizzati AS (\n   SELECT\n    retweeted_status,\n      CASE\n         WHEN LOWER(retweeted_status.user.description) RLIKE 'journalist|reporter|media|news'\n            THEN 'Media/Giornalista'\n         WHEN LOWER(retweeted_status.user.description) RLIKE 'volunteer|rescue|relief|red cross'\n            THEN 'Volontario/Soccorritore'\n         WHEN LOWER(retweeted_status.user.description) RLIKE 'official|government|department|emergency management|fema'\n            THEN 'Governo/Ufficiale'\n         WHEN LOWER(retweeted_status.user.description) RLIKE 'expert|scientist|researcher|meteorologist'\n            THEN 'Esperto/Scienziato'\n         WHEN LOWER(retweeted_status.user.description) RLIKE 'organization|ngo|non-profit'\n            THEN 'Organizzazione/ONG'\n         ELSE 'Non Specificato'\n      END AS CategoriaUtente\nFROM disasters\nWHERE\n      retweeted_status IS NOT NULL\n      AND retweeted_status.user.description IS NOT NULL\n)\nSELECT\n    CategoriaUtente,\n   COUNT(DISTINCT retweeted_status.user.screen_name) AS NumeroUtentiUnici,\n   COUNT(retweeted_status.id_str) AS NumeroTweetTotali\nFROM UtentiCategorizzati\nWHERE CategoriaUtente != 'Non Specificato'\nGROUP BY CategoriaUtente\nORDER BY NumeroUtentiUnici DESC;",
-            "charts": [
-                {
-                    "type": "Torta",
-                    "x": "CategoriaUtente",
-                    "y": "NumeroUtentiUnici"
                 }
             ],
             "ml_algorithms": []

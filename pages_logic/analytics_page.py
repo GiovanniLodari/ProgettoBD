@@ -173,19 +173,28 @@ class ChartVisualizer:
         chart_type = chart_config.get('type', '').lower()
         x_col = chart_config.get('x')
         y_col = chart_config.get('y')
+        z_col = chart_config.get('z')
+        agg_func = chart_config.get('agg', 'max')
         
         try:
-            prepared_data = self._prepare_chart_data(df, x_col, y_col, chart_type)
+            df_final = df
+            x_col_final = x_col
+            y_col_final = y_col
             
-            if prepared_data is None or prepared_data['df'].empty:
-                st.warning("Nessun dato valido dopo la preparazione.")
-                return None
+            # Le heatmap usano i dati originali, quindi bypassiamo la preparazione
+            if chart_type != 'heatmap':
+                prepared_data = self._prepare_chart_data(df, x_col, y_col, chart_type)
+                
+                if prepared_data is None or prepared_data['df'].empty:
+                    st.warning("Nessun dato valido dopo la preparazione.")
+                    return None
+                
+                # Usiamo i dati preparati per tutti gli altri grafici
+                df_final = prepared_data['df']
+                x_col_final = prepared_data['x_col']
+                y_col_final = prepared_data['y_col']
             
-            df_final = prepared_data['df']
-            x_col_final = prepared_data['x_col']
-            y_col_final = prepared_data['y_col']
-            
-            fig = self._create_chart_by_type(df_final, chart_type, x_col_final, y_col_final, x_col)
+            fig = self._create_chart_by_type(df_final, chart_type, x_col_final, y_col_final, x_col, z_col, agg_func)
             
             if fig:
                 fig.update_layout(height=500, template='plotly_white', 
@@ -239,8 +248,7 @@ class ChartVisualizer:
         
         return {'df': df_final, 'x_col': x_col_final, 'y_col': y_col_final}
 
-    def _create_chart_by_type(self, df: pd.DataFrame, chart_type: str, x_col: str, y_col: str, 
-                            original_x_col: str) -> Optional[go.Figure]:
+    def _create_chart_by_type(self, df: pd.DataFrame, chart_type: str, x_col: str, y_col: str, original_x_col: str, z_col: str, agg_func: str) -> Optional[go.Figure]:
         """Crea il grafico specifico usando dati già preparati e unificati."""
         fig = None
         
@@ -265,7 +273,7 @@ class ChartVisualizer:
                         title=original_x_col
                     ),
                     height=600,
-                    title=f"Grafico a Barre - {y_col} per {original_x_col}<br><sub>📊 {n_unique_x} categorie - Usa il cursore per navigare</sub>"
+                    title=f"Grafico a Barre - {y_col} per {original_x_col}"
                 )
                 if n_unique_x > 50:
                     fig.update_xaxes(range=[-0.5, 19.5])
@@ -285,7 +293,7 @@ class ChartVisualizer:
                         title=original_x_col
                     ),
                     height=600,
-                    title=f"Grafico a Linee - {y_col} rispetto a {original_x_col}<br><sub>📈 {n_unique_x} punti dati - Usa il cursore per navigare</sub>"
+                    title=f"Grafico a Linee - {y_col} rispetto a {original_x_col}"
                 )
                 if n_unique_x > 50:
                     fig.update_xaxes(range=[-0.5, 19.5])
@@ -310,23 +318,44 @@ class ChartVisualizer:
                         title=f"Distribuzione - {y_col} per {original_x_col}")
         
         elif chart_type == 'heatmap':
-            if len(df[x_col].unique()) <= 50 and len(df[y_col].unique()) <= 50:
-                crosstab = pd.crosstab(df[y_col], df[x_col])
-                fig = px.imshow(
-                    crosstab, 
-                    title=f"Heatmap: {y_col} vs {x_col}",
-                    color_continuous_scale='Plasma'
+            if z_col:
+                try:
+                    pivot_table = pd.pivot_table(
+                        df, 
+                        values=z_col, 
+                        index=y_col, 
+                        columns=x_col, 
+                        aggfunc=agg_func
                     )
+                    
+                    fig = px.imshow(
+                        pivot_table,
+                        title=f"Heatmap di {z_col} tra {y_col} e {x_col}",
+                        labels=dict(x=x_col, y=y_col, color=f"{agg_func} di {z_col}"),
+                        color_continuous_scale='Plasma'
+                    )
+                except Exception as e:
+                    st.error(f"Impossibile creare la pivot table: {e}")
+                    fig = go.Figure() # Restituisce un grafico vuoto in caso di errore
+
             else:
-                fig = px.density_heatmap(
-                    df,
-                    x=x_col,
-                    y=y_col,
-                    title=f"Density Heatmap: {y_col} vs {x_col}",
-                    nbinsx=50,
-                    nbinsy=50,
-                    color_continuous_scale='Plasma'
-                )
+                if len(df[x_col].unique()) <= 50 and len(df[y_col].unique()) <= 50:
+                    crosstab = pd.crosstab(df[y_col], df[x_col])
+                    fig = px.imshow(
+                        crosstab, 
+                        title=f"Heatmap: {y_col} vs {x_col}",
+                        color_continuous_scale='Plasma'
+                        )
+                else:
+                    fig = px.density_heatmap(
+                        df,
+                        x=x_col,
+                        y=y_col,
+                        title=f"Density Heatmap: {y_col} vs {x_col}",
+                        nbinsx=50,
+                        nbinsy=50,
+                        color_continuous_scale='Plasma'
+                    )
 
         if fig:
             fig.update_layout(
@@ -778,130 +807,18 @@ class SparkMLProcessor:
                 pass
             return {'error': f'Errore critico K-Means: {e}', 'success': False}
 
-    def _run_bisecting_kmeans_optimized(self, df_prepared: SparkDataFrame, original_features: List[str]) -> Dict[str, Any]:
-        """Versione sicura di Bisecting K-Means."""
-        try:
-            self._ensure_spark_session_active()
-            
-            # Persisti il DataFrame
-            df_prepared.cache()
-            
-            total_rows = df_prepared.count()
-            if total_rows < 4:
-                df_prepared.unpersist()
-                return {'error': f'Troppo poche righe ({total_rows})', 'success': False}
-            
-            max_k = min(10, total_rows // 2)
-            k_values = list(range(2, max_k + 1))
-            
-            if not k_values:
-                df_prepared.unpersist()
-                return {'error': 'Impossibile determinare k validi', 'success': False}
-            
-            best_k = 2
-            best_score = -1
-            best_model = None
-            successful_runs = 0
-            
-            progress_bar = st.progress(0)
-            
-            for i, k in enumerate(k_values):
-                progress = (i + 1) / len(k_values)
-                progress_bar.progress(progress)
-                
-                try:
-                    bisecting_kmeans = BisectingKMeans(
-                        k=k, 
-                        featuresCol="features", 
-                        predictionCol="prediction", 
-                        seed=42
-                    )
-                    model = bisecting_kmeans.fit(df_prepared)
-                    predictions = model.transform(df_prepared)
-                    
-                    # Campione per valutazione
-                    if total_rows > 1000:
-                        eval_sample = predictions.sample(fraction=0.1, seed=42)
-                    else:
-                        eval_sample = predictions
-                    
-                    evaluator = ClusteringEvaluator(
-                        predictionCol="prediction", 
-                        featuresCol="features",
-                        metricName="silhouette"
-                    )
-                    score = evaluator.evaluate(eval_sample)
-                    
-                    if score > best_score:
-                        best_score = score
-                        best_k = k
-                        best_model = model
-                    
-                    successful_runs += 1
-                    
-                except Exception as e:
-                    st.warning(f"Errore k={k}: {str(e)[:100]}...")
-                    continue
-            
-            progress_bar.empty()
-            
-            if best_model is None or successful_runs == 0:
-                df_prepared.unpersist()
-                return {'error': 'Bisecting K-Means fallito', 'success': False}
-            
-            # Collect sicuro
-            try:
-                final_predictions = best_model.transform(df_prepared)
-                
-                if total_rows > 5000:
-                    sample_predictions = final_predictions.sample(fraction=5000/total_rows, seed=42)
-                    labels_data = sample_predictions.select("prediction").collect()
-                    st.warning(f"Campione di {len(labels_data)} righe")
-                else:
-                    labels_data = final_predictions.select("prediction").collect()
-                
-                labels = [row.prediction for row in labels_data]
-                
-            except Exception as e:
-                df_prepared.unpersist()
-                return {'error': f'Errore raccolta: {e}', 'success': False}
-            
-            # Cleanup
-            df_prepared.unpersist()
-                        
-            return {
-                'algorithm': 'Bisecting K-Means',
-                'labels': labels,
-                'n_clusters': best_k,
-                'silhouette_score': best_score,
-                'best_params': {'k': best_k},
-                'success': True
-            }
-            
-        except Exception as e:
-            try:
-                df_prepared.unpersist()
-            except:
-                pass
-            return {'error': f'Errore Bisecting K-Means: {e}', 'success': False}
-
     def run_supervised_optimized(self, algorithm: str, features: List[str], target: str) -> Dict[str, Any]:
         """Versione robusta per algoritmi supervisionati."""
         try:
-            # Preparazione dati robusta
             df_prepared, feature_cols = self._prepare_spark_data_robust(features, target)
             
-            # Determina tipo di problema basandosi sui dati REALI
             target_unique = self.df[target].nunique()
             target_is_numeric = pd.api.types.is_numeric_dtype(self.df[target])
             
-            # Logica migliorata per determinare classificazione vs regressione
             is_classification = (not target_is_numeric) or (target_unique <= 10 and target_unique >= 2)
             
             if is_classification:
-                # Encoding del target per classificazione
                 if target_is_numeric:
-                    # Converti numerico in categorie
                     df_prepared = df_prepared.withColumn("label", col(target).cast("string"))
                 
                 target_indexer = StringIndexer(
@@ -911,32 +828,27 @@ class SparkMLProcessor:
                 )
                 df_prepared = target_indexer.fit(df_prepared).transform(df_prepared)
             else:
-                # Per regressione
                 df_prepared = df_prepared.withColumn("label", col(target).cast(DoubleType()))
             
-            # Split con proporzioni adattive
             total_rows = df_prepared.count()
             if total_rows < 100:
-                train_ratio = 0.7  # Più dati per training se dataset piccolo
+                train_ratio = 0.7
             else:
                 train_ratio = 0.8
                 
             train_df, test_df = df_prepared.randomSplit([train_ratio, 1-train_ratio], seed=42)
             
-            # Verifica split
             train_count = train_df.count()
             test_count = test_df.count()
             
             if train_count < 10 or test_count < 5:
                 raise ValueError(f"Split inadeguato: train={train_count}, test={test_count}")
             
-            # Esecuzione basata sul tipo
             if is_classification and algorithm in ['Random Forest Classifier', 'GBT Classifier']:
                 return self._run_classification_optimized(algorithm, train_df, test_df)
             elif not is_classification and algorithm == 'Linear Regression':
                 return self._run_regression_optimized(algorithm, train_df, test_df)
             else:
-                # Suggerisci algoritmo corretto
                 if is_classification:
                     suggested = algorithm.replace('Regressor', 'Classifier')
                 else:
@@ -950,7 +862,6 @@ class SparkMLProcessor:
         except Exception as e:
             return {'error': f"Errore in {algorithm}: {e}", 'success': False}
         finally:
-            # Cleanup sempre
             if hasattr(self, 'spark_df') and self.spark_df is not None:
                 try:
                     self.spark_df.unpersist()
@@ -982,7 +893,6 @@ class SparkMLProcessor:
             metricName="accuracy"
         )
         
-        # Cross validation
         cv = CrossValidator(
             estimator=base_model,
             estimatorParamMaps=param_grid,
@@ -994,11 +904,9 @@ class SparkMLProcessor:
         with st.spinner(f"Ottimizzazione {algorithm} con Cross-Validation..."):
             cv_model = cv.fit(train_df)
         
-        # Predizioni sui test
         predictions = cv_model.transform(test_df)
         accuracy = evaluator.evaluate(predictions)
         
-        # Raccogli risultati
         test_actual = [row.label for row in test_df.select("label").collect()]
         test_pred = [row.prediction for row in predictions.select("prediction").collect()]
         
@@ -1279,15 +1187,13 @@ class SparkMLVisualizer:
             return
 
         st.divider()
-        st.markdown("### 🤖 Risultati Machine Learning (Spark + Scikit-learn)")
+        st.markdown("### 🤖 Algoritmi di ML")
 
-        # Gestisci il caso di un singolo algoritmo
         if len(ml_results) == 1:
             st.markdown(f"#### {ml_configs[0].get('algorithm', 'Algoritmo Sconosciuto')}")
             self.visualize_results(ml_results[0], ml_configs[0])
             return
 
-        # Gestisci più algoritmi con tab
         tab_names = []
         for i, cfg in enumerate(ml_configs):
             algorithm = cfg.get('algorithm', f'Algoritmo {i+1}')
@@ -1325,7 +1231,6 @@ class SparkMLVisualizer:
             with st.expander("🔧 Parametri Ottimizzati", expanded=False):
                 st.json(results['best_params'])
         
-        # Dispatch alla funzione di visualizzazione specifica
         if algorithm in ['K-Means', 'Bisecting K-Means', 'DBSCAN']:
             self._visualize_clustering(results, config)
         elif algorithm in ['Random Forest Classifier', 'GBT Classifier', 'Linear Regression']:
@@ -1337,14 +1242,12 @@ class SparkMLVisualizer:
         """Visualizza risultati clustering (Spark e scikit-learn)."""
         algorithm = results['algorithm']
         
-        # Metriche specifiche per algoritmo
         if algorithm == 'DBSCAN':
             col1, col2, col3 = st.columns(3)
             col1.metric("Cluster Trovati", results.get('n_clusters', 'N/A'))
             col2.metric("Punti Noise", results.get('n_noise', 'N/A'))
             col3.metric("Silhouette Score", f"{results.get('silhouette_score', 0):.3f}")
         else:
-            # K-Means e Bisecting K-Means
             col1, col2 = st.columns(2)
             col1.metric("Cluster Trovati", results.get('n_clusters', 'N/A'))
             col2.metric("Silhouette Score", f"{results.get('silhouette_score', 0):.3f}")
@@ -1358,7 +1261,6 @@ class SparkMLVisualizer:
                 df_plot = df_clean.copy()
                 df_plot['Cluster'] = results['labels']
                 
-                # Per DBSCAN, gestisci i punti noise
                 if algorithm == 'DBSCAN':
                     df_plot['Cluster'] = df_plot['Cluster'].astype(str)
                     df_plot.loc[df_plot['Cluster'] == '-1', 'Cluster'] = 'Noise'
@@ -1371,7 +1273,6 @@ class SparkMLVisualizer:
                 if hover_col:
                     df_plot[hover_col] = original_df.loc[df_clean.index, hover_col]
 
-                # Colori specifici per DBSCAN (evidenzia noise)
                 if algorithm == 'DBSCAN':
                     color_map = {}
                     unique_clusters = df_plot['Cluster'].unique()
@@ -1431,7 +1332,6 @@ class SparkMLVisualizer:
         y_test, y_pred = results['test_actual'], results['predictions']
         
         if is_classification:
-            # Matrice di confusione
             conf_matrix = pd.crosstab(
                 pd.Series(y_test, name='Reali'), 
                 pd.Series(y_pred, name='Predizioni')
@@ -1440,13 +1340,11 @@ class SparkMLVisualizer:
                            title="Matrice di Confusione",
                            color_continuous_scale='Blues')
         else:
-            # Scatter plot per regressione
             fig = px.scatter(
                 x=y_test, y=y_pred, 
                 labels={'x': 'Valori Reali', 'y': 'Predizioni'}, 
                 title="Predizioni vs. Valori Reali"
             )
-            # Linea ideale
             fig.add_shape(
                 type="line", 
                 x0=min(y_test), y0=min(y_test), 
@@ -1507,47 +1405,9 @@ def find_best_columns_for_analysis(df: pd.DataFrame) -> Tuple[Optional[str], Opt
     possible_agg_cols = [col for col in numerical_cols if col != best_group_by]
     return (best_group_by, possible_agg_cols[0], 'sum') if possible_agg_cols else (best_group_by, 'count', 'count')
 
-def suggest_charts(df: pd.DataFrame) -> Dict[str, Dict[str, Any]]:
-    """Suggerisce grafici appropriati per un DataFrame aggregato."""
-    if df is None or df.empty or len(df.columns) < 2: 
-        return {}
-    cat_col, num_col = df.columns[0], df.columns[1]
 
-    suggestions = {
-        'bar_chart': {
-            'type': 'bar', 
-            'title': f'Classifica per {cat_col}', 
-            'config': {'x': cat_col, 'y': num_col}
-        }
-    }
-    
-    if df[cat_col].nunique() <= 10 and df[num_col].min() >= 0:
-        suggestions['pie_chart'] = {
-            'type': 'pie', 
-            'title': f'Distribuzione per {cat_col}', 
-            'config': {'names': cat_col, 'values': num_col}
-        }
-    
-    return suggestions
-
-def display_suggested_charts(df: pd.DataFrame, suggestions: Dict[str, Dict[str, Any]]):
-    """Mostra i grafici suggeriti in un layout a tab."""
-    if not suggestions: return
-    
-    tab_names = [cfg['title'] for cfg in suggestions.values()]
-    tabs = st.tabs(tab_names)
-    
-    for tab, (key, config) in zip(tabs, suggestions.items()):
-        with tab:
-            if config['type'] == 'bar':
-                fig = px.bar(df, x=config['config']['x'], y=config['config']['y'], title=config['title'])
-            elif config['type'] == 'pie':
-                fig = px.pie(df, names=config['config']['names'], values=config['config']['values'], title=config['title'])
-            st.plotly_chart(fig, use_container_width=True)
-
-### 6. FUNZIONE PRINCIPALE DELLA PAGINA CON SPARK
+### 6. FUNZIONE PRINCIPALE
 # ==============================================================================
-
 def show_analytics_page():
     """
     Funzione principale per visualizzare la pagina di analisi con supporto Spark MLlib.
@@ -1557,7 +1417,6 @@ def show_analytics_page():
         st.warning("Esegui una query SQL per caricare un dataset valido.")
         return
 
-    # Verifica disponibilità Spark
     spark = st.session_state.spark_manager.get_spark_session()
     if spark is None:
         st.error("❌ Spark session non disponibile. Assicurati che Spark sia inizializzato.")
@@ -1568,7 +1427,7 @@ def show_analytics_page():
     predefined_ml = find_predefined_config(query_text, 'ml_algorithms')
     
     if predefined_charts or predefined_ml:
-        st.markdown("### 🎯 Analisi Predefinite")
+        st.markdown("### 📊 Grafici")
         
         if predefined_charts:
             ChartVisualizer().display_charts_from_config(dataset, predefined_charts)
@@ -1585,115 +1444,3 @@ def show_analytics_page():
                 
             except Exception as e:
                 st.error(f"Errore nell'esecuzione ML con Spark: {e}")
-        
-        if not st.checkbox("Mostra anche analisi manuale/automatica", value=False):
-            return
-        st.divider()
-
-    st.markdown("## 🔬 Analisi Dati con Apache Spark")
-    tab1, tab2, tab3 = st.tabs(["🤖 Analisi Automatica", "🔧 Analisi Manuale", "⚡ Spark ML"])
-
-    with tab1:
-        group_by_col, agg_col, agg_type = find_best_columns_for_analysis(dataset)
-        if group_by_col:
-            st.info(f"Analisi automatica suggerita: Aggregazione di **{agg_col}** per **{group_by_col}** con Spark SQL.")
-            
-            try:
-                analytics = GeneralAnalytics(dataset, spark)
-                result_df = analytics.perform_aggregation(group_by_col, agg_col, agg_type)
-                
-                if result_df is not None and not result_df.empty:
-                    st.dataframe(result_df, use_container_width=True)
-                    suggestions = suggest_charts(result_df)
-                    display_suggested_charts(result_df, suggestions)
-                else:
-                    st.warning("Nessun risultato dall'aggregazione Spark.")
-                    
-            except Exception as e:
-                st.error(f"Errore nell'analisi Spark: {e}")
-        else:
-            st.warning("Non è stato possibile identificare colonne per un'analisi automatica.")
-
-    with tab2:
-        st.markdown("### ⚙️ Configura la Tua Analisi")
-        cols = st.columns(3)
-        
-        hashable_cols = [c for c in dataset.columns if is_hashable(dataset[c])]
-        numeric_cols = ['count'] + list(dataset.select_dtypes(include=np.number).columns)
-        
-        group_by = cols[0].selectbox("Raggruppa per:", hashable_cols, key="manual_group")
-        agg_col = cols[1].selectbox("Aggrega colonna:", numeric_cols, key="manual_agg_col")
-        agg_type = cols[2].selectbox("Tipo aggregazione:", 
-                                   ['sum', 'mean', 'max', 'min'] if agg_col != 'count' else ['count'], 
-                                   key="manual_agg_type")
-        
-        if st.button("🚀 Genera Analisi con Spark", type="primary", use_container_width=True):
-            try:
-                analytics = GeneralAnalytics(dataset, spark)
-                result_df = analytics.perform_aggregation(group_by, agg_col, agg_type)
-                
-                if result_df is not None and not result_df.empty:
-                    st.dataframe(result_df, use_container_width=True)
-                    suggestions = suggest_charts(result_df)
-                    display_suggested_charts(result_df, suggestions)
-                else:
-                    st.error("Nessun risultato trovato.")
-                    
-            except Exception as e:
-                st.error(f"Errore nell'analisi Spark: {e}")
-
-    with tab3:
-        st.markdown("### ⚡ Machine Learning con Spark MLlib")
-        
-        try:
-            spark_ml_processor = SparkMLProcessor(dataset, spark)
-            available_algorithms = spark_ml_processor.get_algorithm_requirements()
-            
-            # Interface per configurare ML
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                selected_algorithm = st.selectbox(
-                    "Seleziona Algoritmo:",
-                    list(available_algorithms.keys()),
-                    key="spark_ml_algorithm"
-                )
-                
-                alg_info = available_algorithms[selected_algorithm]
-                st.info(f"Tipo: {alg_info['type'].title()} | Engine: {alg_info['engine']} | {alg_info['description']}")
-                
-            with col2:
-                available_features = [col for col in dataset.columns 
-                                    if dataset[col].dtype in ['int64', 'float64', 'object', 'category']]
-                
-                selected_features = st.multiselect(
-                    "Seleziona Features:",
-                    available_features,
-                    key="spark_ml_features"
-                )
-                
-                if alg_info['requires_target']:
-                    target_col = st.selectbox(
-                        "Seleziona Target:",
-                        [col for col in available_features if col not in selected_features],
-                        key="spark_ml_target"
-                    )
-                else:
-                    target_col = None
-            
-            if st.button("🎯 Esegui Algoritmo Spark ML", type="primary", use_container_width=True):
-                ml_config = {
-                    'algorithm': selected_algorithm,
-                    'features': selected_features,
-                    'target': target_col
-                }
-                
-                with st.spinner(f"Esecuzione {selected_algorithm} con Spark MLlib..."):
-                    result = spark_ml_processor.execute_ml_config(ml_config)
-                
-                spark_ml_visualizer = SparkMLVisualizer(spark_ml_processor)
-                spark_ml_visualizer.visualize_results(result, ml_config)
-                
-        except Exception as e:
-            st.error(f"Errore nell'inizializzazione Spark ML: {e}")
-            st.info("Assicurati che la sessione Spark sia attiva e configurata correttamente.")
