@@ -21,7 +21,7 @@ from pyspark.ml.regression import LinearRegression as SparkLinearRegression
 from pyspark.ml.evaluation import ClusteringEvaluator, MulticlassClassificationEvaluator, RegressionEvaluator
 from pyspark.ml import Pipeline
 from pyspark.ml.tuning import CrossValidator, ParamGridBuilder
-from pyspark.sql.functions import col, when, isnan, isnull
+from pyspark.sql.functions import col, when, isnan, isnull, monotonically_increasing_id
 from pyspark.sql.types import DoubleType
 
 # Algoritmi di ML non supportati da Spark
@@ -29,6 +29,7 @@ from sklearn.ensemble import IsolationForest
 from sklearn.cluster import DBSCAN
 from sklearn.preprocessing import LabelEncoder
 from sklearn.preprocessing import StandardScaler as SklearnStandardScaler
+from sklearn.metrics import confusion_matrix
 
 # Import per utils
 from utils.utils import get_twitter_query_templates
@@ -374,7 +375,8 @@ class ChartVisualizer:
         if len(charts_config) == 1:
             fig = self.create_chart(df, charts_config[0])
             if fig:
-                st.plotly_chart(fig, use_container_width=True)
+                chart_type = charts_config[0].get('type', 'chart')
+                st.plotly_chart(fig, width='stretch', key=f"single_chart_{chart_type}")
         else:
             tab_names = [f"📊 {cfg.get('type', f'Grafico {i+1}').title()}" for i, cfg in enumerate(charts_config)]
             tabs = st.tabs(tab_names)
@@ -382,7 +384,7 @@ class ChartVisualizer:
                 with tab:
                     fig = self.create_chart(df, chart_config)
                     if fig:
-                        st.plotly_chart(fig, use_container_width=True)
+                        st.plotly_chart(fig, width='stretch')
 
 ### 3. CLASSE PER SPARK MLLIB
 # ==============================================================================
@@ -819,14 +821,20 @@ class SparkMLProcessor:
             
             if is_classification:
                 if target_is_numeric:
-                    df_prepared = df_prepared.withColumn("label", col(target).cast("string"))
+                    df_prepared = df_prepared.withColumn("target_temp", col(target).cast("string"))
+                    input_col_for_indexer = "target_temp"
+                else:
+                    input_col_for_indexer = target
                 
                 target_indexer = StringIndexer(
-                    inputCol="label" if target_is_numeric else target, 
+                    inputCol=input_col_for_indexer,
                     outputCol="label",
                     handleInvalid="keep"
                 )
                 df_prepared = target_indexer.fit(df_prepared).transform(df_prepared)
+                
+                if target_is_numeric:
+                    df_prepared = df_prepared.drop("target_temp")
             else:
                 df_prepared = df_prepared.withColumn("label", col(target).cast(DoubleType()))
             
@@ -884,13 +892,18 @@ class SparkMLProcessor:
                 .addGrid(model_class.maxIter, [10, 20]) \
                 .addGrid(model_class.maxDepth, [5, 10]) \
                 .build()
-            
-        base_model = model_class(featuresCol="features", labelCol="label")
+        
+        # Specifica esplicitamente le colonne
+        base_model = model_class(
+            featuresCol="features", 
+            labelCol="label",
+            predictionCol="prediction"
+        )
         
         evaluator = MulticlassClassificationEvaluator(
             labelCol="label", 
             predictionCol="prediction", 
-            metricName="accuracy"
+            metricName="f1"
         )
         
         cv = CrossValidator(
@@ -905,9 +918,10 @@ class SparkMLProcessor:
             cv_model = cv.fit(train_df)
         
         predictions = cv_model.transform(test_df)
+        
         accuracy = evaluator.evaluate(predictions)
         
-        test_actual = [row.label for row in test_df.select("label").collect()]
+        test_actual = [row.label for row in predictions.select("label").collect()]
         test_pred = [row.prediction for row in predictions.select("prediction").collect()]
         
         best_params = cv_model.bestModel.extractParamMap()
@@ -1296,7 +1310,7 @@ class SparkMLVisualizer:
                     color_discrete_map=color_map
                 )
                 
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
     
     def _visualize_anomaly_detection(self, results: Dict, config: Dict):
         """Visualizza risultati anomaly detection."""
@@ -1315,46 +1329,119 @@ class SparkMLVisualizer:
                 title="Isolation Forest - Anomaly Scores",
                 hover_data=scores_df.columns
             )
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch', key="anomaly_isolation_forest")
     
     def _visualize_supervised(self, results: Dict):
-        """Visualizza risultati algoritmi supervisionati (invariata)."""
+        """Visualizza risultati algoritmi supervisionati con metriche dettagliate."""
         is_classification = results.get('is_classification', False)
-        target_type = results.get('target_type', 'classification' if is_classification else 'regression')
         
         if is_classification:
             metric_val = results.get('accuracy', 0)
-            st.metric("Accuracy", f"{metric_val:.3f}")
+            
+            # Calcola metriche aggiuntive
+            from sklearn.metrics import precision_score, recall_score, f1_score, classification_report
+            
+            y_test = results['test_actual']
+            y_pred = results['predictions']
+            
+            # Metriche per classe
+            precision = precision_score(y_test, y_pred, average=None, zero_division=0)
+            recall = recall_score(y_test, y_pred, average=None, zero_division=0)
+            f1 = f1_score(y_test, y_pred, average=None, zero_division=0)
+            f1_avg = f1_score(y_test, y_pred, average='weighted', zero_division=0)
+            # Ottieni le etichette uniche
+            unique_labels = sorted(list(set(y_test) | set(y_pred)))
+            
+            # Crea metriche per visualizzazione
+            col1, col2 = st.columns(2)
+            col1.metric("Accuracy", f"{metric_val:.4f}")
+            col2.metric("F1-Score", f"{f1_avg:.4f}")
+            
+            # Tabella delle metriche per classe
+            st.markdown("#### 📈 Metriche per Classe")
+            
+            metrics_df = pd.DataFrame({
+                'Class': unique_labels,
+                'Precision': [f"{p:.4f}" for p in precision],
+                'Recall': [f"{r:.4f}" for r in recall],
+                'F1-Score': [f"{f:.4f}" for f in f1],
+                'Support': [list(y_test).count(label) for label in unique_labels]
+            })
+            
+            st.dataframe(metrics_df, width='stretch', hide_index=True)
+            
+            cm = confusion_matrix(y_test, y_pred, labels=unique_labels)
+            
+            # Crea etichette leggibili
+            if len(unique_labels) == 2:
+                class_names = ['Classe 0 (Negativo)', 'Classe 1 (Positivo)']
+            else:
+                class_names = [f'Classe {label}' for label in unique_labels]
+            
+            # Crea la figura con Plotly
+            fig = go.Figure(data=go.Heatmap(
+                z=cm,
+                x=class_names,
+                y=class_names,
+                text=cm,
+                texttemplate='%{text}',
+                textfont={"size": 16},
+                colorscale='Blues',
+                showscale=True,
+                hovertemplate='Actual: %{y}<br>Predicted: %{x}<br>Count: %{z}<extra></extra>'
+            ))
+            
+            fig.update_layout(
+                title='Matrice di Confusione',
+                xaxis_title='Predizioni',
+                yaxis_title='Valori Reali',
+                height=500,
+                font=dict(size=12),
+                xaxis=dict(side='bottom'),
+                yaxis=dict(autorange='reversed')  # Per avere la classe 0 in alto
+            )
+            
+            algorithm = results.get('algorithm', 'classifier')
+            st.plotly_chart(fig, width='stretch', key=f"confusion_matrix_{algorithm}")
+            
         else:
             metric_val = results.get('mse', 0)
-            st.metric("MSE", f"{metric_val:.3f}")
-        
-        y_test, y_pred = results['test_actual'], results['predictions']
-        
-        if is_classification:
-            conf_matrix = pd.crosstab(
-                pd.Series(y_test, name='Reali'), 
-                pd.Series(y_pred, name='Predizioni')
-            )
-            fig = px.imshow(conf_matrix, text_auto=True, 
-                           title="Matrice di Confusione",
-                           color_continuous_scale='Blues')
-        else:
+            
+            col1, col2 = st.columns(2)
+            col1.metric("📉 MSE", f"{metric_val:.4f}")
+            
+            from sklearn.metrics import r2_score, mean_absolute_error
+            y_test = results['test_actual']
+            y_pred = results['predictions']
+            
+            r2 = r2_score(y_test, y_pred)
+            mae = mean_absolute_error(y_test, y_pred)
+            
+            col2.metric("📊 R² Score", f"{r2:.4f}")
+            st.metric("📏 MAE", f"{mae:.4f}")
+            
             fig = px.scatter(
                 x=y_test, y=y_pred, 
                 labels={'x': 'Valori Reali', 'y': 'Predizioni'}, 
-                title="Predizioni vs. Valori Reali"
+                title="Predizioni vs. Valori Reali",
+                opacity=0.6
             )
-            fig.add_shape(
-                type="line", 
-                x0=min(y_test), y0=min(y_test), 
-                x1=max(y_test), y1=max(y_test), 
-                line=dict(dash="dash", color="red")
-            )
-        
-        st.plotly_chart(fig, use_container_width=True)
+            
+            min_val = min(min(y_test), min(y_pred))
+            max_val = max(max(y_test), max(y_pred))
+            
+            fig.add_trace(go.Scatter(
+                x=[min_val, max_val],
+                y=[min_val, max_val],
+                mode='lines',
+                name='Predizione Perfetta',
+                line=dict(color='red', dash='dash', width=2)
+            ))
+            
+            algorithm = results.get('algorithm', 'regressor')
+            st.plotly_chart(fig, width='stretch', key=f"regression_scatter_{algorithm}")
 
-### 5. FUNZIONI DI SUPPORTO (invariate)
+### 5. FUNZIONI DI SUPPORTO
 # ==============================================================================
 def normalize_query_for_comparison(query: str) -> str:
     """Normalizza una query per il confronto."""

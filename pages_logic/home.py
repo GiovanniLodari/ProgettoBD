@@ -135,7 +135,7 @@ def main():
                         for idx, uploaded_file in enumerate(uploaded_files):
                             path = FileHandler.handle_uploaded_file(uploaded_file)
                             progress = int((idx+1)/len(uploaded_files) * 100)
-                            progress_bar.progress(progress, text=f"Decompressed {idx+1} of {len(uploaded_files)} files")
+                            progress_bar.progress(progress, text=f"Decompressed {idx+1} of {len(uploaded_files)} files" if tutti_file_gz else st.spinner(f"Handling {len(uploaded_files)} files..."))
                             if path:
                                 temp_paths.append(path)
                         progress_bar.empty()

@@ -343,9 +343,8 @@ def show_dataset_info_safe(dataset):
                     st.error(f"❌ Errore nella lettura dello schema o dei campi complessi: {e}")
                     st.write("Colonne disponibili:", ", ".join(dataset.columns[:10]))
     
-
 def show_simplified_editor_tab(query_engine, dataset):
-    """Tab editor semplificato con template integrati"""
+    """Tab editor semplificato con template integrati - VERSIONE CORRETTA V2"""
     
     st.markdown("#### 📚 Query Predefinite")
     
@@ -367,100 +366,99 @@ def show_simplified_editor_tab(query_engine, dataset):
                 with col_query:
                     st.code(query_text, language="sql")
                 
-                # --- Colonna 2: Blocco con i grafici correlati ---
                 with col_charts:
-                        if charts_config:
-                            with st.container(border=True):
-                                st.markdown("**📊 Grafici Predefiniti:**")
-                                for chart in charts_config:
-                                    chart_type = chart.get('type', 'N/D')
-                                    x_axis = chart.get('x', 'N/D')
-                                    y_axis = chart.get('y', 'N/D')
-                                    z_axis = chart.get('z', 'N/D')
+                    if charts_config:
+                        with st.container(border=True):
+                            st.markdown("**📊 Grafici Predefiniti:**")
+                            for chart in charts_config:
+                                chart_type = chart.get('type', 'N/D')
+                                x_axis = chart.get('x', 'N/D')
+                                y_axis = chart.get('y', 'N/D')
+                                z_axis = chart.get('z', 'N/D')
+                                
+                                if chart_type in ["Barre", "Linee"]:
+                                    if y_axis:
+                                        st.markdown(
+                                            f"- Grafico a {chart_type}\n"
+                                            f"  - x: `{x_axis}`\n"
+                                            f"  - y: `{y_axis}`"
+                                        )
+                                    else:
+                                        st.markdown(
+                                            f"- Grafico a {chart_type}\n"
+                                            f"  - x: `{x_axis}`"
+                                        )
+                                elif chart_type == "Heatmap":
+                                    agg_func = chart.get('agg', 'N/D') 
+                                    if z_axis != 'N/D' and agg_func != 'N/D':
+                                        st.markdown(
+                                            f"- {chart_type}\n"
+                                            f"  - x: `{x_axis}`\n"
+                                            f"  - y: `{y_axis}`\n"
+                                            f"  - z: `{z_axis}`\n"
+                                            f"  - Aggregazione: `{agg_func}`"
+                                        )
+                                    elif agg_func == 'N/D' and z_axis != 'N/D':
+                                        st.markdown(
+                                            f"- {chart_type}\n"
+                                            f"  - x: `{x_axis}`\n"
+                                            f"  - y: `{y_axis}`\n"
+                                            f"  - z: `{z_axis}`"
+                                        )
+                                    else:
+                                        st.markdown(
+                                            f"- {chart_type}\n"
+                                            f"  - x: `{x_axis}`\n"
+                                            f"  - y: `{y_axis}`"
+                                        )
+                                else:
+                                    if y_axis:
+                                        st.markdown(
+                                            f"- Grafico a {chart_type}\n"
+                                            f"  - Categoria: `{x_axis}`\n"
+                                            f"  - Valori: `{y_axis}`"
+                                        )
+                                    else:
+                                        st.markdown(
+                                            f"- Grafico a {chart_type}\n"
+                                            f"  - Categoria: `{x_axis}`"
+                                        )
+                    else:
+                        st.info("Nessun grafico predefinito.")
+
+                    if ml_config:
+                        with st.container(border=True):
+                            st.markdown("**🤖 Algoritmi ML Predefiniti:**")
+                            for ml in ml_config:
+                                alg_name = ml.get('algorithm', 'N/D')
+                                features = ml.get('features', [])
+                                target = ml.get('target')
+
+                                display_text = f"- **{alg_name}**"
+                                if target:
+                                    display_text += f"\n  - Target: `{target}`"                                    
+                                else:
+                                    if features:
+                                        if len(features) < 5:
+                                            feature_display = ', '.join(f'`{f}`' for f in features)
+                                            display_text += f"\n  - Features: {feature_display}"
+                                        else:
+                                            display_text += f"\n  - Features: `{len(features)}`"
                                     
-                                    if chart_type in ["Barre", "Linee"]:
-                                        if y_axis:
-                                            st.markdown(
-                                                f"- Grafico a {chart_type}\n"
-                                                f"  - x: `{x_axis}`\n"
-                                                f"  - y: `{y_axis}`"
-                                            )
-                                        else:
-                                            st.markdown(
-                                                f"- Grafico a {chart_type}\n"
-                                                f"  - x: `{x_axis}`"
-                                            )
-                                    elif chart_type == "Heatmap":
-                                        agg_func = chart.get('agg', 'N/D') 
-                                        if z_axis != 'N/D'  and agg_func != 'N/D':
-                                            st.markdown(
-                                                f"- {chart_type}\n"
-                                                f"  - x: `{x_axis}`\n"
-                                                f"  - y: `{y_axis}`\n"
-                                                f"  - z: `{z_axis}`\n"
-                                                f"  - Aggregazione: `{agg_func}`"
-                                            )
-                                        elif agg_func == 'N/D' and z_axis != 'N/D':
-                                            st.markdown(
-                                                f"- {chart_type}\n"
-                                                f"  - x: `{x_axis}`\n"
-                                                f"  - y: `{y_axis}`\n"
-                                                f"  - z: `{z_axis}`"
-                                            )
-                                        else:
-                                            st.markdown(
-                                                f"- {chart_type}\n"
-                                                f"  - x: `{x_axis}`\n"
-                                                f"  - y: `{y_axis}`"
-                                            )
-                                    else:
-                                        if y_axis:
-                                            st.markdown(
-                                                f"- Grafico a {chart_type}\n"
-                                                f"  - Categoria: `{x_axis}`\n"
-                                                f"  - Valori: `{y_axis}`"
-                                            )
-                                        else:
-                                            st.markdown(
-                                                f"- Grafico a {chart_type}\n"
-                                                f"  - Categoria: `{x_axis}`"
-                                            )
-                        else:
-                            st.info("Nessun grafico predefinito.")
+                                st.markdown(display_text)
+                    else:
+                        st.info("Nessun algoritmo di ML predefinito.")
 
-                        if ml_config:
-                            with st.container(border=True):
-                                st.markdown("**🤖 Algoritmi ML Predefiniti:**")
-                                for ml in ml_config:
-                                    alg_name = ml.get('algorithm', 'N/D')
-                                    features = ml.get('features', [])
-                                    target = ml.get('target')
-
-                                    display_text = f"- **{alg_name}**"
-                                    if target:
-                                        display_text += f"\n  - Target: `{target}`"                                    
-                                    else:
-                                        if features:
-                                            if len(features) < 5:
-                                                feature_display = ', '.join(f'`{f}`' for f in features)
-                                                display_text += f"\n  - Features: {feature_display}"
-                                            else:
-                                                display_text += f"\n  - Features: `{len(features)}`"
-                                        
-                                    st.markdown(display_text)
-                        else:
-                            st.info("Nessun algoritmo di ML predefinito.")
-
-                # --- Colonna 4: Pulsanti modifica/elimina ---
                 with col_edit:
-                    #st.write("") # Spazio per allineare
-                    execute_btn = st.button("▶️", key=f"template_{category}_{name}", help="Use query", width="stretch")
+                    execute_btn = st.button("▶️", key=f"template_{category}_{name}", help="Use query")
                     if execute_btn:
-                        st.session_state.selected_template = query_text
-                        st.session_state.run_query = True
+                        # CORREZIONE CHIAVE: Salva la query da eseguire in modo persistente
+                        st.session_state.pending_query = query_text
+                        st.session_state.query_timestamp = pd.Timestamp.now().isoformat()
+                        st.session_state.execute_pending = True
+                        st.rerun()
                     
-                    # Pulsante modifica
-                    if st.button("✏️", key=f"edit_{category}_{name}", help="Modifica query", width="stretch"):
+                    if st.button("✏️", key=f"edit_{category}_{name}", help="Modifica query"):
                         edit_data = {
                             'category': category,
                             'name': name,
@@ -470,8 +468,7 @@ def show_simplified_editor_tab(query_engine, dataset):
                         }
                         open_save_form(query_text, mode='edit', existing_data=edit_data)
                     
-                    # Pulsante elimina
-                    if st.button("🗑️", key=f"delete_{category}_{name}", help="Elimina query", width="stretch"):
+                    if st.button("🗑️", key=f"delete_{category}_{name}", help="Elimina query"):
                         show_delete_confirmation_dialog(category, name)
                 
                 if i < num_queries - 1:
@@ -479,17 +476,19 @@ def show_simplified_editor_tab(query_engine, dataset):
 
     
     st.markdown("### ✏️ Editor SQL")
-    
     default_query = f"SELECT * FROM {DatabaseConfig.TEMP_VIEW_NAME}"
     
-    if 'selected_template' in st.session_state:
-        default_query = st.session_state.selected_template
-        st.info("✅ Template caricato nell'editor!")
+    if 'pending_query' in st.session_state:
+        default_query = st.session_state.pending_query
+        st.success("✅ Template caricato! Attendi l'esecuzione della query...")
+    
+    text_area_key = f"query_editor_{st.session_state.get('query_timestamp', 'default')}"
     
     query_text = st.text_area(
         "Query SQL:",
         value=default_query,
         height=150,
+        key=text_area_key,
         help=f"Scrivi la tua query SQL. Usa '{DatabaseConfig.TEMP_VIEW_NAME}' come nome della tabella."
     )
     
@@ -511,7 +510,6 @@ def show_simplified_editor_tab(query_engine, dataset):
     
     if save_template_button:
         if query_text.strip():
-            #show_save_template_popup(query_text)
             open_save_form(query_text)
         else:
             st.error("❌ Scrivi una query prima di salvarla!")
@@ -528,17 +526,31 @@ def show_simplified_editor_tab(query_engine, dataset):
                 if 'suggestion' in validation:
                     st.info(f"💡 Suggerimento: {validation['suggestion']}")
 
-    # Esecuzione query
-    if execute_button or st.session_state.get('run_query', False):
+    should_execute = False
+    
+    if execute_button:
+        should_execute = True
+        if 'pending_query' in st.session_state:
+            del st.session_state.pending_query
+        if 'execute_pending' in st.session_state:
+            del st.session_state.execute_pending
+    
+    elif st.session_state.get('execute_pending', False):
+        should_execute = True
+        if 'execute_pending' in st.session_state:
+            del st.session_state.execute_pending
+    
+    if should_execute:
         if not query_text.strip():
             st.error("⚠️ Inserisci una query SQL valida")
             return
-        st.session_state.run_query = False
         
         with st.spinner("⚡ Esecuzione query in corso..."):
             result = query_engine.execute_custom_query_safe(query_text, result_limit)
-            if 'selected_template' in st.session_state:
-                del st.session_state.selected_template
+            
+            # Dopo l'esecuzione, pulisci pending_query
+            if 'pending_query' in st.session_state:
+                del st.session_state.pending_query
             
             if result['success']:
                 data = result['data']
@@ -549,21 +561,30 @@ def show_simplified_editor_tab(query_engine, dataset):
                 
                 if result['warning']:
                     st.warning(f"⚠️ {result['warning']}")
+            else:
+                st.error(f"❌ {result['error']}")
+                if result.get('error'):
+                    show_error_suggestions(result['error'], query_text)
     
+    # Visualizzazione risultati
     if 'last_query_result' in st.session_state:
         st.markdown("---")
         st.markdown("### 📊 Risultati")
         result_data = st.session_state.last_query_result
         stats = st.session_state.last_query_stats
-        query_text = st.session_state.last_query_text
+        saved_query_text = st.session_state.last_query_text
         total_rows = stats.get('total_rows')
 
-        
         col1, col2, col3, col4 = st.columns(4)
         label = "Righe Caricate / Totali"
-        value = f"{result_limit:,} / {total_rows:,}" if result_limit < total_rows else f"{total_rows:,} / {total_rows:,}"
+        if isinstance(total_rows, int) and result_limit and result_limit < total_rows:
+            value = f"{result_limit:,} / {total_rows:,}"
+        elif isinstance(total_rows, int):
+            value = f"{total_rows:,} / {total_rows:,}"
+        else:
+            value = f"{len(result_data):,}"
+        
         with col1:
-            #st.metric("Righe Totali", f"{len(result_data):,}")
             st.metric(label=label, value=value)
         with col2:
             st.metric("Colonne", len(result_data.columns))
@@ -574,7 +595,6 @@ def show_simplified_editor_tab(query_engine, dataset):
             null_count = result_data.isnull().sum().sum()
             st.metric("Valori Null", null_count)
         
-        # Controlli di visualizzazione
         column1, column2, column3 = st.columns(3)
         
         with column1:
@@ -582,18 +602,23 @@ def show_simplified_editor_tab(query_engine, dataset):
         
         with column2:
             if not show_all:
-                if limit_results:
+                if limit_results and isinstance(total_rows, int):
                     max_rows = min(result_limit, total_rows)
-                else:
+                elif isinstance(total_rows, int):
                     max_rows = min(10000, total_rows)
+                else:
+                    max_rows = len(result_data)
 
-                display_limit = st.slider("Righe da mostrare:", 10, max_rows, 100, key="reults_slider")
+                display_limit = st.slider("Righe da mostrare:", 10, max(10, max_rows), min(100, max_rows), key="results_slider")
             else:
                 display_limit = len(result_data)
+        
         with column3:
             search_term = st.text_input("🔍 Cerca nei risultati:", placeholder="Termine di ricerca...")
         
-        display_data = result_data.head(result_limit).copy()
+        display_data = result_data.copy()
+        if result_limit and len(display_data) > result_limit:
+            display_data = display_data.head(result_limit)
 
         if search_term:
             text_cols = display_data.select_dtypes(include=['object', 'string']).columns
@@ -612,12 +637,11 @@ def show_simplified_editor_tab(query_engine, dataset):
             if len(display_data) > display_limit:
                 st.info(f"Mostrando {display_limit} di {len(display_data)} righe.")
 
-        if query_text and has_predefined_analytics(query_text):
+        if saved_query_text and has_predefined_analytics(saved_query_text):
             with st.expander("🔬 Analisi Dati"):
                 show_analytics_page()
         else:
             st.info("ℹ️ Non ci sono grafici o algoritmi di ML personalizzati: usa il pulsante 'Salva Query' per aggiungere grafici e analisi.")
-
 
 def show_delete_confirmation_dialog(category: str, name: str):
     """Mostra dialog di conferma per eliminazione query"""

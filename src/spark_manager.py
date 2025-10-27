@@ -63,7 +63,7 @@ class SparkManager:
                 .config("spark.sql.execution.arrow.pyspark.enabled", "true") \
                 .config("spark.eventLog.enabled", "true") \
                 .config("spark.eventLog.dir", "/tmp/spark-events") \
-                .config("spark.sql.shuffle.partitions", num_cores * 2) \
+                .config("spark.sql.shuffle.partitions", num_cores * 3) \
                 .config("spark.memory.fraction", "0.8")
 
             self.spark = builder.getOrCreate()
