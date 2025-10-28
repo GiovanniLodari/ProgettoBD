@@ -1,12 +1,11 @@
 """
-Pagina per query SQL personalizzate - Versione semplificata
+Pagina per query SQL.
 """
 
 import streamlit as st
 import streamlit.components.v1 as components
 import pandas as pd
 from src.analytics import QueryEngine
-#from src.visualizations import GeneralVisualizations
 from src.config import Config, DatabaseConfig
 from pyspark.sql import functions as F
 from pyspark.sql.types import *
@@ -21,7 +20,7 @@ from pages_logic.analytics_page import show_analytics_page
 logger = logging.getLogger(__name__)
 
 class RobustDataConverter:
-    """Classe per gestire conversioni robuste da Spark a Pandas con gestione dimensioni"""
+    """Classe per gestire conversioni robuste da Spark a Pandas."""
     
     DEFAULT_MAX_ROWS = 10000
     
@@ -31,7 +30,7 @@ class RobustDataConverter:
         return isinstance(data_type, (StructType, ArrayType, MapType))
 
 class EnhancedQueryEngine(QueryEngine):
-    """QueryEngine migliorato con gestione errori robusta"""
+    """QueryEngine con gestione errori robusta"""
     
     def __init__(self):
         super().__init__()
@@ -40,7 +39,7 @@ class EnhancedQueryEngine(QueryEngine):
     
     def execute_custom_query_safe(self, query: str, limit_results: Optional[int] = None) -> Dict[str, Any]:
         """
-        Esegue query con gestione errori comprehensiva
+        Esegue query con gestione errori robusta.
         
         Returns:
             Dict con 'success', 'data', 'error', 'warning', 'stats'
@@ -73,11 +72,6 @@ class EnhancedQueryEngine(QueryEngine):
                 st.error(f"❌ Impossibile contare le righe totali: {e}")
 
             logger.info(f"Conteggio totale righe: {total_rows_count}")
-            
-            # if limit_results:
-            #     spark_df = spark_df.limit(limit_results)
-            # else:
-            #     spark_df = spark_df.limit(RobustDataConverter.DEFAULT_MAX_ROWS)
             
             if self._is_empty_spark_df(spark_df):
                 result['warning'] = "Query eseguita ma nessun risultato restituito"
@@ -188,7 +182,7 @@ class EnhancedQueryEngine(QueryEngine):
         return stats
 
 def show_simplified_custom_query_page():
-    """Mostra la pagina semplificata per query personalizzate"""
+    """Mostra la logica relativa alle query"""
     
     if not hasattr(st.session_state, 'datasets_loaded') or not st.session_state.datasets_loaded:
         st.warning("⚠️ Nessun dataset caricato. Carica i dati per iniziare l'analisi.")
@@ -227,11 +221,10 @@ def show_simplified_custom_query_page():
 
 
 def show_dataset_info_safe(dataset):
-    """Mostra informazioni dataset con gestione errori in una singola colonna."""
+    """Mostra informazioni dataset."""
     with st.expander("Informazioni Dataset"):
         with st.spinner("Caricamento informazioni dataset..."):
             if dataset is not None:
-                # Recupero delle generalità
                 try:
                     view_name = DatabaseConfig.TEMP_VIEW_NAME
                 except NameError:
@@ -249,7 +242,6 @@ def show_dataset_info_safe(dataset):
                 
                 st.write("") 
                 st.write("") 
-                # --- Sezione Generalità ---
                 col0, col1, col2, col3, col5 = st.columns([0.5, 1, 1, 1, 0.5])
 
                 with col1:
@@ -264,21 +256,18 @@ def show_dataset_info_safe(dataset):
                     
                 st.markdown("---")
 
-                # --- Sezione Schema Colonne ---
                 st.subheader("Schema Colonne")
                 try:
                     schema_list = []
                     complex_fields = {}
                     processed_complex_types = set()
 
-                    # Prendi il primo record per ispezionare i dati complessi
                     first_row = dataset.take(1)
                     if first_row:
                         first_row = first_row[0]
                     else:
                         first_row = None
 
-                    # Itera sui campi dello schema per raccogliere info e campi complessi
                     for field in dataset.schema.fields:
                         col_name = field.name
                         col_type = field.dataType.simpleString()
@@ -295,13 +284,11 @@ def show_dataset_info_safe(dataset):
                             complex_fields[col_name] = field.dataType
                             processed_complex_types.add(col_name)
 
-                    # Mostra la tabella dello schema del DataFrame principale
                     schema_df = pd.DataFrame(schema_list)
                     st.dataframe(schema_df, width='stretch')
 
                     st.markdown("---")
 
-                    # --- Sezione Dettagli Campi Complessi (una tabella per ciascuno, senza ripetizioni) ---
                     st.subheader("Dettagli Campi Complessi")
                     if not complex_fields:
                         st.info("ℹ️ Nessun campo complesso (STRUCT o ARRAY) trovato nel dataset principale.")
@@ -309,7 +296,6 @@ def show_dataset_info_safe(dataset):
                         for col_name, complex_type in complex_fields.items():
                             st.markdown(f"**Campo:** `{col_name}`")
                             
-                            # Genera una tabella per lo schema del campo complesso
                             details_list = []
                             if isinstance(complex_type, StructType):
                                 for sub_field in complex_type.fields:
@@ -344,7 +330,7 @@ def show_dataset_info_safe(dataset):
                     st.write("Colonne disponibili:", ", ".join(dataset.columns[:10]))
     
 def show_simplified_editor_tab(query_engine, dataset):
-    """Tab editor semplificato con template integrati - VERSIONE CORRETTA V2"""
+    """Editor tab con template integrati"""
     
     st.markdown("#### 📚 Query Predefinite")
     
@@ -452,7 +438,6 @@ def show_simplified_editor_tab(query_engine, dataset):
                 with col_edit:
                     execute_btn = st.button("▶️", key=f"template_{category}_{name}", help="Use query")
                     if execute_btn:
-                        # CORREZIONE CHIAVE: Salva la query da eseguire in modo persistente
                         st.session_state.pending_query = query_text
                         st.session_state.query_timestamp = pd.Timestamp.now().isoformat()
                         st.session_state.execute_pending = True
@@ -548,7 +533,6 @@ def show_simplified_editor_tab(query_engine, dataset):
         with st.spinner("⚡ Esecuzione query in corso..."):
             result = query_engine.execute_custom_query_safe(query_text, result_limit)
             
-            # Dopo l'esecuzione, pulisci pending_query
             if 'pending_query' in st.session_state:
                 del st.session_state.pending_query
             
@@ -566,7 +550,6 @@ def show_simplified_editor_tab(query_engine, dataset):
                 if result.get('error'):
                     show_error_suggestions(result['error'], query_text)
     
-    # Visualizzazione risultati
     if 'last_query_result' in st.session_state:
         st.markdown("---")
         st.markdown("### 📊 Risultati")
@@ -657,26 +640,21 @@ def show_delete_confirmation_dialog(category: str, name: str):
 
         with col1:
             if st.button("✅ Sì, elimina", type="primary", width='stretch'):
-                # Procedi con l'eliminazione
                 try:
                     file_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'custom_query.json')
                     templates = get_twitter_query_templates()
                     
-                    # Rimuovi la query
                     if category in templates and name in templates[category]:
                         del templates[category][name]
                         
-                        # Se la categoria è vuota, rimuovila
                         if not templates[category]:
                             del templates[category]
                         
-                        # Salva il file aggiornato
                         with open(file_path, 'w', encoding='utf-8') as f:
                             json.dump(templates, f, indent=4, ensure_ascii=False)
                         
                         deleted = True
                         
-                        # Aggiorna anche la sessione se presente
                         if ('custom_templates' in st.session_state and 
                             category in st.session_state.custom_templates and 
                             name in st.session_state.custom_templates[category]):
@@ -705,9 +683,8 @@ def show_delete_confirmation_dialog(category: str, name: str):
 
 
 def show_save_template_sidebar(query_text: str, mode: str = 'new', existing_data: Dict = None):
-    """Mostra form nella sidebar per salvare o modificare un template personalizzato."""
+    """Mostra form nella sidebar per salvare o modificare un template."""
     
-    # Controlla se il form deve essere mostrato
     show_form = st.session_state.get('show_save_form', False)
     
     if not show_form:
@@ -720,10 +697,8 @@ def show_save_template_sidebar(query_text: str, mode: str = 'new', existing_data
         
         current_query = query_text
 
-        # Inizializzazione dati per modalità edit
         if mode == 'edit' and existing_data:
             if 'form_initialized' not in st.session_state or not st.session_state['form_initialized']:
-                # Se siamo in modifica, FORZA il caricamento dei dati esistenti
                 st.session_state['charts_config'] = existing_data.get('charts', [])
                 st.session_state['ml_config'] = existing_data.get('ml_algorithms', [])
                 st.session_state['form_initialized'] = True
@@ -734,12 +709,7 @@ def show_save_template_sidebar(query_text: str, mode: str = 'new', existing_data
             
             st.info(f"Stai modificando la query '{default_name}' nella categoria '{default_category}'.")
             
-            # if st.session_state.get('charts_config', []):
-            #     st.success(f"📊 Caricati {len(st.session_state['charts_config'])} grafici esistenti")
-            # if st.session_state.get('ml_config', []):
-            #     st.success(f"🤖 Caricati {len(st.session_state['ml_config'])} algoritmi ML esistenti")
         else:
-            # Modalità new - inizializza solo se non esistono già
             st.session_state.setdefault('charts_config', [])
             st.session_state.setdefault('ml_config', [])
             st.session_state.setdefault('form_initialized', True)
@@ -750,9 +720,7 @@ def show_save_template_sidebar(query_text: str, mode: str = 'new', existing_data
         if not current_query.strip():
             st.error("❌ Nessuna query presente nell'editor!")
             return
-        
-        # Sezione categoria e nome
-        
+                
         category_type = st.radio(
             "Tipo categoria:",
             ["Esistente", "Nuova"],
@@ -766,7 +734,6 @@ def show_save_template_sidebar(query_text: str, mode: str = 'new', existing_data
 
         if category_type == "Esistente":
             if existing_categories:
-                # In modalità edit, pre-seleziona la categoria corrente se esiste
                 default_index = 0
                 if mode == 'edit' and default_category in existing_categories:
                     default_index = existing_categories.index(default_category)
@@ -817,18 +784,15 @@ def show_save_template_sidebar(query_text: str, mode: str = 'new', existing_data
         # ----------------- SEZIONE GRAFICI -----------------
         st.markdown("#### 📊 Configurazione Grafici")
 
-        # Pulsante per aggiungere grafico
         if st.button("➕ Aggiungi grafico", key="sidebar_add_chart_btn"):
             st.session_state.charts_config.append({"type": "Barre", "x": None, "y": None})
             st.rerun()
 
         chart_types = ["Barre", "Linee", "Torta", "Heatmap"]
 
-        # Visualizza tutti i grafici configurati
         if st.session_state.get('charts_config', []):
             for i, cfg in enumerate(st.session_state.charts_config):
                 with st.expander(f"📊 Grafico {i+1}", expanded=False):
-                    # Tipo di grafico
                     type_index = 0
                     if cfg.get("type") and cfg["type"] in chart_types:
                         type_index = chart_types.index(cfg["type"])
@@ -842,7 +806,6 @@ def show_save_template_sidebar(query_text: str, mode: str = 'new', existing_data
                     cfg["type"] = new_type
 
                     if columns:
-                        # Asse X
                         x_index = 0
                         if cfg.get("x") and cfg["x"] in columns:
                             x_index = columns.index(cfg["x"])
@@ -858,16 +821,13 @@ def show_save_template_sidebar(query_text: str, mode: str = 'new', existing_data
                         )
                         cfg["x"] = new_x
 
-                        # Asse Y
                         y_label = "Valori (opz.):" if is_pie_chart else "Asse Y:"
                         y_options = ([""] + columns) if is_pie_chart else columns
 
-                        # Calcola l'indice iniziale correttamente
                         y_index = 0
                         if cfg.get("y") and cfg["y"] in columns:
                             y_index = y_options.index(cfg["y"])
 
-                        # 2. Ora il selettore usa le variabili corrette
                         new_y = st.selectbox(
                             y_label,
                             y_options,
@@ -928,7 +888,6 @@ def show_save_template_sidebar(query_text: str, mode: str = 'new', existing_data
         # ----------------- SEZIONE MACHINE LEARNING -----------------
         st.markdown("#### 🤖 Configurazione ML")
 
-        # Pulsante per aggiungere algoritmo ML
         if st.button("➕ Aggiungi algoritmo ML", key="sidebar_add_ml_btn"):
             st.session_state.ml_config.append({
                 "algorithm": "K-Means", 
@@ -943,25 +902,23 @@ def show_save_template_sidebar(query_text: str, mode: str = 'new', existing_data
             "K-Means": {"type": "clustering", "engine": "spark"},
             
             # Spark MLlib - Classificazione  
-            #"Random Forest Classifier": {"type": "supervised", "engine": "spark"},
-            #"GBT Classifier": {"type": "supervised", "engine": "spark"},
+            "Random Forest Classifier": {"type": "supervised", "engine": "spark"},
+            "GBT Classifier": {"type": "supervised", "engine": "spark"},
             
             # Spark MLlib - Regressione
             #"Linear Regression": {"type": "supervised", "engine": "spark"},
             
-            # Scikit-learn - Altri algoritmi
+            # Algoritmi da Scikit-learn
             "DBSCAN": {"type": "clustering", "engine": "sklearn"},
             "Isolation Forest": {"type": "anomaly", "engine": "sklearn"}
         }
 
         
-        # Visualizza tutti gli algoritmi ML configurati
         if st.session_state.get('ml_config', []):
             for i, ml_cfg in enumerate(st.session_state.ml_config):
                 algorithm = ml_cfg.get('algorithm', 'K-Means')
                 
                 with st.expander(f"🤖 ML {i+1} - {algorithm}", expanded=False):
-                    # Selezione algoritmo
                     algorithm_options = list(ml_algorithms.keys())
                     current_alg = ml_cfg.get("algorithm", "K-Means")
                     if current_alg not in algorithm_options:
@@ -992,13 +949,11 @@ def show_save_template_sidebar(query_text: str, mode: str = 'new', existing_data
                                 help="Seleziona le colonne da utilizzare come input"
                             )
                             ml_cfg["features"] = new_features
-                            ml_cfg["target"] = None # Assicura che il target sia nullo
+                            ml_cfg["target"] = None
                         
                         else:
-                            # Messaggio per l'utente
                             st.info("Tutte le colonne verranno usate come features (esclusa la colonna target). La selezione è automatica.")
                             
-                            # Selettore per il target (come prima)
                             target_options = [""] + columns
                             current_target = ml_cfg.get("target", "")
                             target_index = 0
@@ -1014,18 +969,14 @@ def show_save_template_sidebar(query_text: str, mode: str = 'new', existing_data
                             )
                             ml_cfg["target"] = new_target if new_target != "" else None
 
-                            # NUOVA LOGICA: Popola automaticamente le features
                             if ml_cfg["target"]:
-                                # Escludi la colonna target dalla lista di tutte le colonne
                                 feature_list = [col for col in columns if col != ml_cfg["target"]]
                                 ml_cfg["features"] = feature_list
                             else:
-                                # Se non c'è un target, la lista features è vuota (verrà bloccata dalla validazione)
                                 ml_cfg["features"] = []
                     else:
                         st.warning("⚠️ Impossibile determinare le colonne dalla query.")
                     
-                    # Pulsante rimozione
                     if st.button("🗑️ Rimuovi", key=f"sidebar_remove_ml_{i}"):
                         st.session_state.ml_config.pop(i)
                         st.rerun()
@@ -1034,7 +985,6 @@ def show_save_template_sidebar(query_text: str, mode: str = 'new', existing_data
 
         st.markdown('</div>', unsafe_allow_html=True)
         
-        # ----------------- PULSANTI SALVATAGGIO -----------------        
         col_save, col_cancel = st.columns(2)
 
         with col_save:
@@ -1053,13 +1003,11 @@ def show_save_template_sidebar(query_text: str, mode: str = 'new', existing_data
         """, unsafe_allow_html=True)
         st.markdown('</div>', unsafe_allow_html=True)
                 
-        # Gestione click pulsanti
         if save_clicked:
             if not category.strip() or not template_name.strip():
                 st.error("❌ Categoria e nome template sono obbligatori!")
                 return
             
-            # Validazione algoritmi ML
             for i, ml_cfg in enumerate(st.session_state.get('ml_config', [])):
                 if not ml_cfg.get("features"):
                     st.error(f"❌ L'algoritmo ML {i+1} deve avere almeno una feature selezionata!")
@@ -1069,12 +1017,10 @@ def show_save_template_sidebar(query_text: str, mode: str = 'new', existing_data
                     st.error(f"❌ L'algoritmo ML '{ml_cfg['algorithm']}' deve avere almeno una feature selezionata!")
                     return
                 
-                # Il controllo del target rimane valido solo per i supervisionati
                 if ml_algorithms[ml_cfg["algorithm"]]["type"] == "supervised" and not ml_cfg.get("target"):
                     st.error(f"❌ L'algoritmo supervisionato '{ml_cfg['algorithm']}' deve avere un target!")
                     return
             
-            # Gestione modifica (rimozione del vecchio template se cambiato nome/categoria)
             if mode == 'edit' and existing_data:
                 original_category = existing_data.get('category', '')
                 original_name = existing_data.get('name', '')
@@ -1096,7 +1042,6 @@ def show_save_template_sidebar(query_text: str, mode: str = 'new', existing_data
                     except Exception as e:
                         st.warning(f"⚠️ Avviso durante la rimozione del template originale: {e}")
             
-            # Salvataggio del nuovo/modificato template
             if 'custom_templates' not in st.session_state:
                 st.session_state.custom_templates = {}
             
@@ -1133,7 +1078,6 @@ def show_save_template_sidebar(query_text: str, mode: str = 'new', existing_data
                                  else f"✅ Template '{template_name}' salvato nella categoria '{category}'!")
                 st.success(success_message)
                 
-                # Chiudi il form dopo il salvataggio
                 st.session_state.show_save_form = False
                 if 'charts_config' in st.session_state:
                     del st.session_state['charts_config']
@@ -1151,7 +1095,6 @@ def show_save_template_sidebar(query_text: str, mode: str = 'new', existing_data
 
         if cancel_clicked:
             st.session_state.show_save_form = False
-            # Pulisci le configurazioni temporanee
             if 'charts_config' in st.session_state:
                 del st.session_state['charts_config']
             if 'ml_config' in st.session_state:
@@ -1168,7 +1111,7 @@ def open_save_form(query_text: str, mode: str = 'new', existing_data: Dict = Non
     st.session_state.save_form_query = query_text
     st.session_state.save_form_mode = mode
     st.session_state.save_form_existing_data = existing_data
-    st.session_state.form_initialized = False  # Reset per permettere re-inizializzazione
+    st.session_state.form_initialized = False
     force_open_sidebar()
     #st.rerun()
 
@@ -1176,7 +1119,6 @@ def normalize_query_for_comparison(query: str) -> str:
     """Normalizza una query per il confronto."""
     if not query: 
         return ""
-    # Ho corretto la tua regex per rimuovere i commenti SQL in modo più robusto
     query = re.sub(r"--.*", "", query)
     query = re.sub(r'\s+', ' ', query.strip())
     return query.lower()
@@ -1200,8 +1142,7 @@ def find_predefined_config(query_text: str, config_key: str) -> List[Dict[str, A
 
 def has_predefined_analytics(query_text: str) -> bool:
     """
-    Funzione helper che controlla se esistono configurazioni di grafici O ML 
-    per una data query. È più efficiente perché si ferma alla prima trovata.
+    Funzione helper che controlla se esistono configurazioni di grafici o ML per una data query.
     """
     if find_predefined_config(query_text, 'charts'):
         return True
@@ -1282,17 +1223,6 @@ def is_numeric_column(column_name: str, query: str = None, spark_session=None) -
         return False
     return True
 
-
-def get_default_param_value(param_name: str):
-    """
-    Restituisce i valori di default per i parametri ML.
-    Ora contiene solo i parametri che l'utente può configurare manualmente.
-    """
-    defaults = {
-        'n_components': 2
-    }
-    return defaults.get(param_name, 1)
-
 def show_delete_confirmation_dialog(category: str, name: str):
     """Mostra dialog di conferma per eliminazione query"""
     
@@ -1307,26 +1237,21 @@ def show_delete_confirmation_dialog(category: str, name: str):
 
         with col1:
             if st.button("✅ Sì, elimina", type="primary", width='stretch'):
-                # Procedi con l'eliminazione
                 try:
                     file_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'custom_query.json')
                     templates = get_twitter_query_templates()
                     
-                    # Rimuovi la query
                     if category in templates and name in templates[category]:
                         del templates[category][name]
                         
-                        # Se la categoria è vuota, rimuovila
                         if not templates[category]:
                             del templates[category]
                         
-                        # Salva il file aggiornato
                         with open(file_path, 'w', encoding='utf-8') as f:
                             json.dump(templates, f, indent=4, ensure_ascii=False)
                         
                         deleted = True
                         
-                        # Aggiorna anche la sessione se presente
                         if ('custom_templates' in st.session_state and 
                             category in st.session_state.custom_templates and 
                             name in st.session_state.custom_templates[category]):
@@ -1355,7 +1280,7 @@ def show_delete_confirmation_dialog(category: str, name: str):
 
 def get_query_columns(query: str, spark) -> list[str]:
     """
-    Restituisce la lista di colonne da una query Spark SQL senza eseguire righe.
+    Restituisce la lista di colonne da una query.
     """
     try:
         df = spark.sql(query)
@@ -1364,10 +1289,9 @@ def get_query_columns(query: str, spark) -> list[str]:
         print(f"Errore estrazione colonne: {e}")
         return []
 
-
 def format_sql_for_json(sql: str) -> str:
     """
-    Formatta SQL con newline leggibili e indentazione minima.
+    Formattazione SQL previa salvataggio.
     """
     sql = sql.strip()
 
@@ -1376,64 +1300,9 @@ def format_sql_for_json(sql: str) -> str:
         sql = re.sub(rf"\s+{kw}\b", f"\n{kw}", sql, flags=re.IGNORECASE)
 
     sql = re.sub(r"SELECT\s+", "SELECT\n    ", sql, flags=re.IGNORECASE)
-    #sql = re.sub(r",\s*", ",\n    ", sql)
     sql = re.sub(r"\n\s+\n", "\n", sql)
 
     return sql
-
-def show_export_options(result: pd.DataFrame, query_text: str):
-    """Opzioni di export dei risultati"""
-    
-    st.markdown("#### 💾 Export Risultati")
-    
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        csv_data = result.to_csv(index=False)
-        st.download_button(
-            "📥 CSV",
-            csv_data,
-            file_name=f"query_results_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv",
-            mime="text/csv",
-            help="Scarica i risultati in formato CSV"
-        )
-    
-    with col2:
-        json_data = result.to_json(orient='records', indent=2)
-        st.download_button(
-            "📥 JSON",
-            json_data,
-            file_name=f"query_results_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.json",
-            mime="application/json",
-            help="Scarica i risultati in formato JSON"
-        )
-    
-    with col3:
-        sql_export = f"-- Query eseguita il {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}\n-- Righe restituite: {len(result)}\n\n{query_text};"
-        st.download_button(
-            "📥 SQL",
-            sql_export,
-            file_name=f"query_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.sql",
-            mime="text/plain",
-            help="Scarica la query SQL"
-        )
-    
-    with col4:
-        try:
-            from io import BytesIO
-            excel_buffer = BytesIO()
-            with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
-                result.to_excel(writer, sheet_name='Query Results', index=False)
-            
-            st.download_button(
-                "📥 Excel",
-                excel_buffer.getvalue(),
-                file_name=f"query_results_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                help="Scarica i risultati in formato Excel"
-            )
-        except ImportError:
-            st.button("📥 Excel", disabled=True, help="Installa openpyxl per abilitare l'export Excel")
 
 def show_error_suggestions(error: str, query: str):
     """Mostra suggerimenti basati sugli errori comuni"""
@@ -1467,14 +1336,12 @@ def show_history_tab(query_engine):
     
     st.markdown(f"**Totale query eseguite: {len(history)}**")
     
-    # Filtri cronologia
     col1, col2 = st.columns(2)
     with col1:
         show_successful_only = st.checkbox("Solo query riuscite", value=False)
     with col2:
         search_history = st.text_input("🔍 Cerca nella cronologia:", placeholder="Cerca testo...")
     
-    # Filtra cronologia
     filtered_history = history.copy()
     
     if show_successful_only:
@@ -1488,7 +1355,6 @@ def show_history_tab(query_engine):
         st.info("🔍 Nessuna query trovata con i filtri attuali")
         return
     
-    # Mostra cronologia filtrata
     for i, query_info in enumerate(reversed(filtered_history)):
         index = len(filtered_history) - i
         
@@ -1520,7 +1386,6 @@ def show_history_tab(query_engine):
                     st.success("✅ Query caricata nell'editor!")
                     st.rerun()
     
-    # Azioni cronologia
     st.markdown("---")
     col1, col2 = st.columns(2)
     
@@ -1533,7 +1398,6 @@ def show_history_tab(query_engine):
     
     with col2:
         if history:
-            # Export cronologia
             history_export = generate_history_export(history)
             st.download_button(
                 "📥 Esporta Cronologia",
@@ -1543,7 +1407,7 @@ def show_history_tab(query_engine):
             )
 
 def generate_history_export(history: List[Dict]) -> str:
-    """Genera export della cronologia in formato SQL"""
+    """Genera export della cronologia."""
     
     export_lines = [
         "-- Cronologia Query SQL",

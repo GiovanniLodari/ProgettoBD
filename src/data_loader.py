@@ -1,6 +1,5 @@
 """
-Versione potenziata del SchemaManager che mantiene tutti gli schemi esistenti
-e aggiunge il fallback automatico a String per campi problematici
+Gestisce l'upload dei dati con schemi flessibili e fallback automatico.
 """
 import os
 import streamlit as st
@@ -28,9 +27,8 @@ import shutil
 logger = logging.getLogger(__name__)
 
 def _json_to_spark_type(json_type):
-    """Funzione ausiliaria che converte ricorsivamente un tipo dal formato JSON a quello PySpark."""
+    """Funzione che converte ricorsivamente un tipo dal formato JSON a quello PySpark."""
     
-    # Caso base per tipi semplici come "string", "long", etc.
     if isinstance(json_type, str):
         type_mapping = {
             "string": StringType(),
@@ -39,12 +37,10 @@ def _json_to_spark_type(json_type):
         }
         return type_mapping.get(json_type, StringType())
 
-    # Caso ricorsivo per tipi complessi (oggetti e array)
     if isinstance(json_type, dict):
         complex_type = json_type.get("type")
         
         if complex_type == "struct":
-            # Se è un oggetto, ricrea la StructType chiamando la funzione per ogni campo figlio
             fields = [
                 StructField(
                     field['name'],
@@ -55,12 +51,10 @@ def _json_to_spark_type(json_type):
             return StructType(fields)
             
         elif complex_type == "array":
-            # Se è un array, ricrea l'ArrayType chiamando la funzione per il tipo degli elementi
             element_type = _json_to_spark_type(json_type['elementType'])
             contains_null = json_type.get('containsNull', True)
             return ArrayType(element_type, contains_null)
 
-    # Se il tipo non è riconosciuto, usa StringType come default sicuro
     return StringType()
 
 
@@ -70,7 +64,7 @@ class SchemaManager:
     Lo schema viene messo in cache dopo la prima lettura per efficienza.
     """
     
-    _schema_cache = None # Variabile di classe per la cache
+    _schema_cache = None
 
     @staticmethod
     def get_twitter_schema(json_path=r"C:\Users\giova\Desktop\ProgettoBD\schema_generale.json"):
@@ -83,20 +77,16 @@ class SchemaManager:
         Returns:
             StructType: Lo schema PySpark completo e pronto all'uso.
         """
-        # Se lo schema è già stato generato, lo restituisce dalla cache
         if SchemaManager._schema_cache:
             return SchemaManager._schema_cache
 
         try:
             print(f"Lettura e generazione dello schema dal file: {json_path}")
-            # Apre, legge e interpreta il file JSON
             with open(json_path, 'r', encoding='utf-8') as f:
                 json_schema = json.load(f)
             
-            # Converte la struttura JSON in uno schema PySpark
             spark_schema = _json_to_spark_type(json_schema)
             
-            # Salva lo schema in cache per le prossime chiamate
             SchemaManager._schema_cache = spark_schema
             print("Schema generato e messo in cache con successo.")
             
@@ -326,24 +316,18 @@ class SchemaManager:
     @staticmethod
     def get_generic_schema():
         """Schema generico per dati sconosciuti"""
-        return None  # Lascia che Spark inferisca automaticamente
+        return None
     
     @staticmethod
     def detect_data_type(sample_data: dict) -> str:
         """
-        Rileva automaticamente il tipo di dati basandosi su un campione
-        
-        Args:
-            sample_data (dict): Campione di dati
-            
-        Returns:
-            str: Tipo di dati rilevato ('twitter', 'generic')
+        Rileva automaticamente il tipo di dati basandosi su un campione.
         """
         twitter_indicators = ['created_at', 'user', 'entities', 'text', 'id', 'id_str', 'retweet_count']
         
         if isinstance(sample_data, dict):
             found_indicators = sum(1 for indicator in twitter_indicators if indicator in sample_data)
-            if found_indicators >= 3:  # Se trova almeno 3 indicatori Twitter
+            if found_indicators >= 3:
                 return 'twitter'
         
         return 'generic'
@@ -351,8 +335,8 @@ class SchemaManager:
     @staticmethod
     def create_permissive_reader(spark, file_format='json', custom_schema=None):
         """
-        NUOVA FUNZIONE: Crea un reader Spark con opzioni permissive che mantiene lo schema
-        ma gestisce automaticamente i campi problematici
+        Crea un reader Spark con opzioni permissive che mantiene lo schema
+        ma gestisce automaticamente i campi problematici.
         """
         if file_format == 'json':
             reader = spark.read \
@@ -384,7 +368,6 @@ class SchemaManager:
             reader = spark.read
             
         else:
-            # Default a JSON
             reader = SchemaManager.create_permissive_reader(spark, 'json', custom_schema)
             
         if custom_schema is not None:
@@ -396,16 +379,7 @@ class SchemaManager:
     @staticmethod 
     def load_with_schema_and_fallback(spark, file_path: str, file_format: str, schema_type: str = 'auto'):
         """
-        NUOVA FUNZIONE PRINCIPALE: Carica i dati usando gli schemi esistenti + fallback automatico
-        
-        Args:
-            spark: Sessione Spark
-            file_path: Percorso del file
-            file_format: Formato del file ('json', 'csv', 'parquet')
-            schema_type: Tipo di schema da usare ('twitter', 'generic', 'auto')
-            
-        Returns:
-            SparkDataFrame: DataFrame caricato con schema ottimale
+        Carica i dati usando gli schemi esistenti + fallback automatico.
         """
         logger.info(f"Caricamento con schema e fallback: {file_path} (formato: {file_format}, schema: {schema_type})")
         
@@ -450,18 +424,15 @@ class SchemaManager:
             if target_schema is not None:
                 df = DataLoader.coerce_to_string(df, target_schema)
             
-            # 4. Report sui risultati
             total_count = df.count()
             logger.info(f"Caricati {total_count} record")
             
-            # Controlla record corrotti
             if "_corrupt_record" in df.columns:
                 corrupt_count = df.filter(F.col("_corrupt_record").isNotNull()).count()
                 if corrupt_count > 0:
                     corrupt_percentage = (corrupt_count / total_count) * 100
                     logger.warning(f"Record con problemi: {corrupt_count}/{total_count} ({corrupt_percentage:.1f}%)")
                     
-                    # Mostra esempi di record corrotti per debug
                     examples = df.filter(F.col("_corrupt_record").isNotNull()) \
                                 .select("_corrupt_record").limit(3).collect()
                     for i, ex in enumerate(examples):
@@ -469,7 +440,6 @@ class SchemaManager:
                 else:
                     logger.info("Nessun record corrotto - schema perfettamente compatibile!")
             
-            # 5. Log dello schema applicato
             logger.info(f"Schema finale: {len(df.schema.fields)} colonne")
             if target_schema:
                 matched_fields = sum(1 for field in target_schema.fields if field.name in df.columns)
@@ -478,9 +448,7 @@ class SchemaManager:
             return df
             
         except Exception as e:
-            logger.error(f"Errore nel caricamento con schema: {e}")
-            
-            # FALLBACK FINALE: carica senza schema con massima permissività
+            logger.error(f"Errore nel caricamento con schema: {e}")            
             logger.info("FALLBACK: caricamento senza schema con massima permissività")
             try:
                 fallback_reader = SchemaManager.create_permissive_reader(spark, file_format, custom_schema=None)
@@ -533,24 +501,7 @@ class SchemaManager:
             
         except Exception as e:
             logger.error(f"Errore nella normalizzazione dello schema: {str(e)}")
-            return df  # Fallback finale
-    
-    @staticmethod
-    def safe_union_dataframes(df1: SparkDataFrame, df2: SparkDataFrame, target_schema: StructType) -> SparkDataFrame:
-        """
-        MANTIENE la funzione originale per unione sicura - non cambia nulla
-        """
-        try:
-            # Normalizza entrambi i DataFrames allo stesso schema
-            df1_normalized = SchemaManager.normalize_dataframe_to_schema(df1, target_schema)
-            df2_normalized = SchemaManager.normalize_dataframe_to_schema(df2, target_schema)
-            
-            # Unisci i DataFrames
-            return df1_normalized.union(df2_normalized)
-            
-        except Exception as e:
-            logger.error(f"Errore nell'unione sicura: {str(e)}")
-            return df1
+            return df
 
 class DataLoader:
     """Classe principale per il caricamento dei dati"""
@@ -566,45 +517,6 @@ class DataLoader:
         self.schema_manager = SchemaManager()
         self.current_dataset = None
         self.dataset_metadata = {}
-    
-    def load_single_file(self, file_path: str, file_format: str = None, schema_type: str = 'auto') -> Optional[SparkDataFrame]:
-        """
-        VERSIONE POTENZIATA: usa gli schemi esistenti + fallback automatico
-        L'API rimane identica, ma internamente usa la nuova logica
-        """
-        logger.info(f"Caricamento file (versione potenziata): {file_path}")
-        
-        try:
-            spark = self.spark_manager.get_spark_session()
-            if not spark:
-                logger.error("Sessione Spark non disponibile")
-                return None
-            
-            # Determina il formato
-            current_format = file_format or self._detect_format(file_path)
-            logger.info(f"Formato rilevato: {current_format}")
-            
-            # USA LA NUOVA FUNZIONE che mantiene gli schemi + aggiunge fallback
-            df = self.schema_manager.load_with_schema_and_fallback(
-                spark, file_path, current_format, schema_type
-            )
-            
-            if df is not None:
-                # Ottimizza e crea vista (logica esistente)
-                df = self.spark_manager.optimize_dataframe(df)
-                self.spark_manager.create_temp_view(df, "temp_data")
-                self._update_metadata(df, file_path)
-                self.current_dataset = df
-                
-                logger.info(f"File caricato con successo: {df.count()} righe")
-                return df
-            else:
-                logger.error(f"Errore nel caricamento del file: {file_path}")
-                return None
-                
-        except Exception as e:
-            logger.error(f"Errore nel caricamento del file {file_path}: {str(e)}", exc_info=True)
-            return None
 
     def load_multiple_files(self, file_paths: List[str], file_format: str = None, schema_type: str = 'auto') -> Optional[SparkDataFrame]:
         """"Carica e unisce più file in un unico DataFrame. Implementa inoltre, la normalizzazione dei dati 
@@ -632,13 +544,12 @@ class DataLoader:
             
             dataframes_normalizzati = []
 
-            # Directory per salvare gli schemi inferiti
+            #Salvataggio degli schemi inferiti
             # temp_parquet_dir = "temp_parquet_output"
             # if os.path.exists(temp_parquet_dir):
             #     shutil.rmtree(temp_parquet_dir)
             # os.makedirs(temp_parquet_dir)
 
-            # Caricamento e Normalizzazione di ogni DataFrame
             for idx, file_path in enumerate(file_paths):
                 try:
                     logger.info(f"--- Processando file {idx+1}/{len(file_paths)}: {file_path} ---")
@@ -657,18 +568,6 @@ class DataLoader:
                         if df is None:
                             logger.warning(f"Salto del file {file_path} perché il caricamento ha restituito None.")
                             continue
-                        
-                    # Salva lo schema inferito per questo file
-                    # try:
-                    #     schema_dict = json.loads(df.schema.json())
-                    #     schema_formatted_string = json.dumps(schema_dict, indent=4)
-                    #     base_filename = os.path.basename(file_path)
-                    #     schema_file_path = os.path.join(schema_dir, f"schema_{base_filename}.json")
-                    #     with open(schema_file_path, "w", encoding="utf-8") as f:
-                    #         f.write(schema_formatted_string)
-                    #     logger.info(f"Schema inferito per {base_filename} salvato in: {schema_file_path}")
-                    # except Exception as schema_error:
-                    #     logger.error(f"Impossibile salvare lo schema per il file {file_path}: {schema_error}")
 
                         df_normalizzato = self.schema_manager.normalize_dataframe_to_schema(df, master_schema)
                         df_normalizzato = df_normalizzato.withColumn("source_file", F.lit(os.path.basename(file_path))) \
@@ -717,78 +616,7 @@ class DataLoader:
                 logger.error(f"Errore durante la finalizzazione del DataFrame (conteggio o persist): {e}", exc_info=True)
                 if 'combined_df' in locals():
                     combined_df.unpersist()
-                return None        
-    
-    def _get_schema_for_type(self, schema_type: str, file_path: str = None) -> Optional[StructType]:
-        """
-        Ottiene lo schema appropriato basato sul tipo richiesto
-        
-        Args:
-            schema_type (str): Tipo di schema ('auto', 'twitter', 'generic')
-            file_path (str, optional): Percorso del file per auto-detect
-            
-        Returns:
-            Optional[StructType]: Schema da applicare
-        """
-        if schema_type == 'twitter':
-            logger.info("Usando schema Twitter")
-            return self.schema_manager.get_twitter_schema()
-        elif schema_type == 'generic':
-            logger.info("Usando schema generico")
-            return self.schema_manager.get_generic_schema()
-        elif schema_type == 'auto':
-            # Prova a rilevare automaticamente il tipo di dati
-            if file_path and file_path.endswith('.json'):
-                try:
-                    # Leggi un piccolo campione per rilevare il tipo
-                    with open(file_path, 'r', encoding='utf-8') as f:
-                        import json
-                        first_line = f.readline()
-                        sample_data = json.loads(first_line)
-                        detected_type = self.schema_manager.detect_data_type(sample_data)
-                        
-                        if detected_type == 'twitter':
-                            logger.info("Rilevato automaticamente formato Twitter")
-                            return self.schema_manager.get_twitter_schema()
-                        
-                except Exception as e:
-                    logger.warning(f"Impossibile rilevare automaticamente il tipo: {e}")
-            
-            return None  # Default: inferenza automatica
-        
-        return None
-    
-    def _load_csv(self, spark, file_path: str, schema: Optional[StructType] = None) -> SparkDataFrame:
-        """Carica un file CSV"""
-        reader = spark.read \
-            .option("header", "true") \
-            .option("inferSchema", "true" if schema is None else "false") \
-            .option("encoding", "UTF-8") \
-            .option("escape", '"')
-            #.option("multiline", "true") \
-        
-        if schema:
-            reader = reader.schema(schema)
-            
-        return reader.csv(file_path)
-    
-    def _load_json(self, spark, file_path: str, schema: Optional[StructType] = None) -> SparkDataFrame:
-        """Carica un file JSON"""
-        reader = spark.read.option("multiline", "true")
-        
-        if schema:
-            reader = reader.schema(schema)
-            
-        return reader.json(file_path)
-    
-    def _load_parquet(self, spark, file_path: str, schema: Optional[StructType] = None) -> SparkDataFrame:
-        """Carica un file Parquet"""
-        reader = spark.read
-        
-        if schema:
-            reader = reader.schema(schema)
-            
-        return reader.parquet(file_path)
+                return None
     
     def _detect_format(self, file_path: str) -> str:
         """Rileva automaticamente il formato del file"""
@@ -805,7 +633,7 @@ class DataLoader:
         return format_mapping.get(extension, 'csv')
     
     def _update_metadata(self, df: SparkDataFrame, file_path: str):
-        """Aggiorna i metadata del dataset"""
+        """Aggiorna i metadati del dataset"""
         try:
             stats = SparkManager().get_dataframe_stats(df)
             if isinstance(file_path, str) and os.path.exists(file_path):
@@ -826,127 +654,11 @@ class DataLoader:
         except Exception as e:
             logger.warning(f"Impossibile aggiornare i metadati: {e}", exc_info=True)
     
-    def get_sample_data(self, limit: int = 100) -> pd.DataFrame:
-        """
-        Ottieni un campione del dataset come Pandas DataFrame
-        
-        Args:
-            limit (int): Numero massimo di righe da restituire
-        
-        Returns:
-            pd.DataFrame: Campione dei dati
-        """
-        if self.current_dataset is None:
-            return pd.DataFrame()
-        
-        try:
-            return self.current_dataset.limit(limit).toPandas()
-        except Exception as e:
-            logger.error(f"Errore nel campionamento dei dati: {str(e)}")
-            return pd.DataFrame()
-    
-    def get_column_info(self) -> pd.DataFrame:
-        """
-        Ottieni informazioni sulle colonne del dataset
-        
-        Returns:
-            pd.DataFrame: Informazioni sulle colonne
-        """
-        if not self.dataset_metadata.get('schema'):
-            return pd.DataFrame()
-        
-        schema_info = []
-        for col_name, col_type in self.dataset_metadata['schema']:
-            # Calcola statistiche base per colonne numeriche
-            try:
-                if self.current_dataset and 'int' in col_type.lower() or 'double' in col_type.lower() or 'float' in col_type.lower():
-                    stats = self.current_dataset.select(col_name).describe().collect()
-                    null_count = self.current_dataset.filter(f"`{col_name}` IS NULL").count()
-                else:
-                    stats = None
-                    null_count = self.current_dataset.filter(f"`{col_name}` IS NULL").count() if self.current_dataset else 0
-                
-                schema_info.append({
-                    'Colonna': col_name,
-                    'Tipo': col_type,
-                    'Valori Null': null_count,
-                    'Statistiche': 'Disponibili' if stats else 'N/A'
-                })
-            except Exception:
-                schema_info.append({
-                    'Colonna': col_name,
-                    'Tipo': col_type,
-                    'Valori Null': 'N/A',
-                    'Statistiche': 'N/A'
-                })
-        
-        return pd.DataFrame(schema_info)
-    
-    def get_metadata(self) -> dict:
-        """Ottieni i metadata del dataset corrente"""
-        return self.dataset_metadata.copy()
-    
-    def validate_dataset(self) -> dict:
-        """
-        Valida il dataset e restituisce un report di qualità 
-        
-        Returns:
-            dict: Report di validazione
-        """
-        if self.current_dataset is None:
-            return {'status': 'error', 'message': 'Nessun dataset caricato'}
-        
-        try:
-            df = self.current_dataset
-            total_records = df.count()
-            
-            if total_records == 0:
-                return {'status': 'warning', 'message': 'Dataset vuoto'}
-            
-            # Controlla colonne con tutti valori null
-            null_columns = []
-            for col_name in df.columns:
-                null_count = df.filter(f"`{col_name}` IS NULL").count()
-                if null_count == total_records:
-                    null_columns.append(col_name)
-            
-            # Controlla duplicati (su tutte le colonne)
-            duplicate_count = df.count() - df.dropDuplicates().count()
-            
-            validation_report = {
-                'status': 'success',
-                'total_records': total_records,
-                'duplicate_records': duplicate_count,
-                'columns_all_null': null_columns,
-                'quality_score': self._calculate_quality_score(total_records, duplicate_count, len(null_columns), len(df.columns))
-            }
-            
-            return validation_report
-            
-        except Exception as e:
-            logger.error(f"Errore nella validazione: {str(e)}")
-            return {'status': 'error', 'message': f'Errore durante la validazione: {str(e)}'}
-    
-    def _calculate_quality_score(self, total_records: int, duplicates: int, null_cols: int, total_cols: int) -> float:
-        """Calcola un punteggio di qualità del dataset (0-100)"""
-        if total_records == 0:
-            return 0.0
-        
-        # Penalità per duplicati
-        duplicate_penalty = min(50, (duplicates / total_records) * 100)
-        
-        # Penalità per colonne completamente null
-        null_col_penalty = (null_cols / total_cols) * 30 if total_cols > 0 else 0
-        
-        # Punteggio base
-        score = 100 - duplicate_penalty - null_col_penalty
-        
-        return max(0.0, min(100.0, score))
     
     @staticmethod
     def coerce_to_string(df, target_schema: StructType):
         """
-        VERSZIONE CORRETTA: Converte in stringa i campi che potrebbero causare conflitti,
+        Converte in stringa i campi che potrebbero causare conflitti,
         ma solo se sono effettivamente di tipo complesso.
         """
         logger.info("Avvio coercizione intelligente dello schema...")
@@ -961,23 +673,17 @@ class DataLoader:
             if col_name in source_schema:
                 source_type = source_schema[col_name]
                 
-                # Se i tipi sono già uguali, non fare nulla
                 if source_type == target_type:
                     select_exprs.append(F.col(col_name))
-                # Se il tipo di origine è complesso (Struct o Array)
                 elif isinstance(source_type, (StructType, ArrayType)):
-                    # E il target è una stringa, converti in JSON.
                     if target_type == StringType():
                         logger.warning(f"Coercizione di '{col_name}' da {source_type} a Stringa JSON.")
                         select_exprs.append(F.to_json(F.col(col_name)).alias(col_name))
-                    # Altrimenti, prova un normale cast
                     else:
                         select_exprs.append(F.col(col_name).cast(target_type).alias(col_name))
-                # Se il tipo di origine è semplice, fai un cast normale
                 else:
                     select_exprs.append(F.col(col_name).cast(target_type).alias(col_name))
             else:
-                # Se la colonna manca, aggiungila come null
                 select_exprs.append(F.lit(None).cast(target_type).alias(col_name))
                 
         return df.select(*select_exprs)
@@ -985,13 +691,8 @@ class DataLoader:
     @staticmethod
     def clean_twitter_dataframe(df: SparkDataFrame) -> SparkDataFrame | None:
         """
-        Pulisce un DataFrame Spark di Twitter rimuovendo le colonne predefinite non necessarie.
-        Args:
-            df (DataFrame): Il DataFrame Spark di input da pulire.
-        Returns:
-            DataFrame | None: Il DataFrame pulito. Restituisce None se si verifica un errore.
+        Pulisce un DataFrame Spark di Twitter rimuovendo le colonne non necessarie.
         """
-        # Lista delle colonne da eliminare (più facile da manutenere qui)
         columns_to_drop = [
             "id", "lang", "in_reply_to_status_id", "quoted_status_id", "possibly_sensitive", "source", "truncated",
             "favorited", "retweeted", "geo", "filter_level", "timestamp_ms",
@@ -1014,20 +715,17 @@ class DataLoader:
         ]
 
         try:
-            # 1. PULIZIA DEL LIVELLO PRINCIPALE (come prima)
             existing_top_level_cols = [col for col in columns_to_drop if col in df.columns]
             cleaned_df = df.drop(*existing_top_level_cols)
             
-            # 2. PULIZIA DEI LIVELLI ANNIDATI (NUOVO PASSAGGIO)
             logger.info("Pulizia delle colonne annidate 'retweeted_status' e 'quoted_status'...")
             
-            # Usiamo F.when per gestire in sicurezza i casi in cui i campi sono NULL
             cleaned_df = cleaned_df.withColumn(
                 "retweeted_status",
-                F.when(
+                F.when( #usato per gestire i valori nulli 
                     F.col("retweeted_status").isNotNull(),
                     F.col("retweeted_status").dropFields(*columns_to_drop)
-                ).otherwise(F.lit(None)) # Lascia NULL se era già NULL
+                ).otherwise(F.lit(None))
             ).withColumn(
                 "quoted_status",
                 F.when(
@@ -1046,17 +744,15 @@ class DataLoader:
             return cleaned_df
 
         except AnalysisException as e:
-            # Errore specifico di Spark, ad es. se una colonna non viene trovata
             logger.error(f"Errore di analisi Spark durante la pulizia del DataFrame: {e}", exc_info=True)
             return None
         except Exception as e:
-            # Qualsiasi altro errore imprevisto
             logger.error(f"Errore imprevisto durante la pulizia del DataFrame: {e}", exc_info=True)
             return None
 
 
 class FileHandler:
-    """Utility per gestire file uploadati"""
+    """Classe di utility per gestire file caricati."""
     
     @staticmethod
     def handle_uploaded_file(uploaded_file) -> Optional[str]:
@@ -1069,11 +765,10 @@ class FileHandler:
             temp_path = os.path.join(temp_dir, uploaded_file.name)
             
             if uploaded_file.name.endswith('.gz'):
-                # Decomprimi file gz
                 with gzip.open(uploaded_file, 'rt') as gz_file:
                     content = gz_file.read()
                 
-                decompressed_path = temp_path[:-3]  # Estrazione .gz
+                decompressed_path = temp_path[:-3]
                 with open(decompressed_path, 'w', encoding='utf-8') as f:
                     f.write(content)
                 

@@ -27,7 +27,7 @@ st.set_page_config(
 )
 
 def main():
-    """Funzione principale dell'applicazione"""
+    """Funzione principale"""
            
     st.markdown("""
     <style>

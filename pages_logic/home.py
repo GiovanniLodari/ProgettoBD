@@ -1,6 +1,5 @@
 """
-Analizzatore Disastri Naturali con Spark Integration
-Versione semplificata per focus su Custom Query
+Analizzatore Disastri Naturali con integrazione Spark - HomePage dell'applicazione Streamlit.
 """
 
 import streamlit as st
@@ -14,14 +13,12 @@ import logging
 import sys
 import traceback
 
-# Import delle utilities Spark
 from src.spark_manager import SparkManager, should_use_spark, get_file_size_mb, detect_data_schema
 from src.data_loader import DataLoader, FileHandler
 from src.analytics import DisasterAnalytics
 from pyspark.sql import DataFrame as SparkDataFrame
 from pages_logic.custom_query import show_simplified_custom_query_page
 
-# Configurazione del Logger
 logging.basicConfig(
     level=logging.INFO,
     format="%(message)s",
@@ -32,14 +29,12 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
-# Configurazione pagina - RIMUOVE LA SIDEBAR
 st.set_page_config(
     page_title="Disaster Analytics - Spark Edition",
     page_icon="🌪️",
     layout="wide"
 )
 
-# CSS ottimizzato - nasconde completamente la sidebar
 st.markdown("""
 <style>
     .stApp > header {visibility: hidden;}
@@ -62,7 +57,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 def main():
-    """Applicazione principale semplificata"""
+    """Applicazione principale"""
     logger.info("Avvio funzione main dell'applicazione Streamlit.")
 
     try:
@@ -135,7 +130,7 @@ def main():
                         for idx, uploaded_file in enumerate(uploaded_files):
                             path = FileHandler.handle_uploaded_file(uploaded_file)
                             progress = int((idx+1)/len(uploaded_files) * 100)
-                            progress_bar.progress(progress, text=f"Decompressed {idx+1} of {len(uploaded_files)} files" if tutti_file_gz else st.spinner(f"Handling {len(uploaded_files)} files..."))
+                            progress_bar.progress(progress, text=f"Decompressed {idx+1} of {len(uploaded_files)} files" if tutti_file_gz else f"Handling {len(uploaded_files)} files...")
                             if path:
                                 temp_paths.append(path)
                         progress_bar.empty()

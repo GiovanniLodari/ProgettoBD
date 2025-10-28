@@ -12,7 +12,6 @@ from typing import Dict, Any, Tuple, Optional, List
 import warnings
 import re
 
-# Import specifici per Spark MLlib
 from pyspark.sql import SparkSession, DataFrame as SparkDataFrame
 from pyspark.ml.feature import VectorAssembler, StandardScaler, StringIndexer, OneHotEncoder, FeatureHasher
 from pyspark.ml.clustering import KMeans, BisectingKMeans
@@ -24,17 +23,14 @@ from pyspark.ml.tuning import CrossValidator, ParamGridBuilder
 from pyspark.sql.functions import col, when, isnan, isnull, monotonically_increasing_id
 from pyspark.sql.types import DoubleType
 
-# Algoritmi di ML non supportati da Spark
 from sklearn.ensemble import IsolationForest
 from sklearn.cluster import DBSCAN
 from sklearn.preprocessing import LabelEncoder
 from sklearn.preprocessing import StandardScaler as SklearnStandardScaler
 from sklearn.metrics import confusion_matrix
 
-# Import per utils
 from utils.utils import get_twitter_query_templates
 
-# Gestione dipendenza opzionale (SciPy)
 try:
     from scipy.signal import find_peaks
     SCIPY_AVAILABLE = True
@@ -43,9 +39,7 @@ except ImportError:
 
 warnings.filterwarnings('ignore')
 
-### 1. CLASSE DI ANALISI PRINCIPALE
-# ==============================================================================
-
+# ============= CLASSE DI ANALISI PRINCIPALE ================
 class GeneralAnalytics:
     """
     Classe helper per eseguire aggregazioni sui dati utilizzando Spark SQL.
@@ -56,44 +50,7 @@ class GeneralAnalytics:
         if self.spark is None:
             raise ValueError("Spark session non trovata. Assicurati che Spark sia inizializzato.")
 
-    def perform_aggregation(self, group_by_col: str, agg_col: str, agg_type: str, sort_desc: bool = True) -> Optional[pd.DataFrame]:
-        """
-        Esegue un'aggregazione utilizzando Spark SQL per migliori performance.
-        """
-        try:
-            # Converti pandas DataFrame in Spark DataFrame
-            spark_df = self.spark.createDataFrame(self.df)
-            spark_df.createOrReplaceTempView("temp_table")
-            
-            # Gestisce il caso speciale del conteggio
-            if agg_col == "count" or agg_type == "count":
-                query = f"""
-                SELECT {group_by_col}, COUNT(*) as count
-                FROM temp_table
-                GROUP BY {group_by_col}
-                ORDER BY count {'DESC' if sort_desc else 'ASC'}
-                """
-            else:
-                # Gestisce le aggregazioni numeriche standard
-                query = f"""
-                SELECT {group_by_col}, {agg_type}({agg_col}) as {agg_type}_{agg_col}
-                FROM temp_table
-                WHERE {agg_col} IS NOT NULL
-                GROUP BY {group_by_col}
-                ORDER BY {agg_type}_{agg_col} {'DESC' if sort_desc else 'ASC'}
-                """
-            
-            result_spark_df = self.spark.sql(query)
-            result = result_spark_df.toPandas()
-            
-            return result
-        except Exception as e:
-            st.error(f"Errore durante l'aggregazione Spark: {e}")
-            return None
-
-### 2. CLASSE PER LA VISUALIZZAZIONE DEI GRAFICI (invariata)
-# ==============================================================================
-
+# ============= CLASSE PER VISUALIZZAZIONE DEI GRAFICI =============
 class ChartVisualizer:
     """
     Classe per gestire la visualizzazione automatica dei grafici basata sui metadati JSON.
@@ -129,40 +86,9 @@ class ChartVisualizer:
                     return False, f"Colonna etichetta '{y_col}' non trovata"
         
         return True, ""
-    
-    def _detect_peaks(self, df: pd.DataFrame, x_col: str, y_col: str, prominence_factor: float = 0.1) -> Tuple[List[int], float]:
-        """Rileva picchi in una serie temporale."""
-        if not SCIPY_AVAILABLE:
-            st.warning("Libreria 'scipy' non trovata. Rilevamento picchi limitato.")
-            df_sorted = df.sort_values(x_col).dropna(subset=[x_col, y_col])
-            y_values = df_sorted[y_col].values
-            
-            peaks = []
-            threshold = np.mean(y_values) + np.std(y_values)
-            
-            for i in range(1, len(y_values) - 1):
-                if (y_values[i] > y_values[i-1] and 
-                    y_values[i] > y_values[i+1] and 
-                    y_values[i] > threshold):
-                    peaks.append(i)
-            return peaks, threshold
-
-        try:
-            df_sorted = df.sort_values(x_col).dropna(subset=[x_col, y_col])
-            y_values = df_sorted[y_col].values
-            
-            prominence_threshold = prominence_factor * np.std(y_values)
-            
-            peaks, properties = find_peaks(y_values, prominence=prominence_threshold)
-            
-            return peaks.tolist(), prominence_threshold
-            
-        except Exception as e:
-            st.error(f"Errore nel rilevamento picchi: {e}")
-            return [], 0.0
 
     def create_chart(self, df: pd.DataFrame, chart_config: Dict[str, Any]) -> Optional[go.Figure]:
-        """Crea un grafico basato sulla configurazione con gestione centralizzata dei dati."""
+        """Crea un grafico basato sulla configurazione preimpostata."""
         if df.empty:
             return None
         
@@ -182,7 +108,6 @@ class ChartVisualizer:
             x_col_final = x_col
             y_col_final = y_col
             
-            # Le heatmap usano i dati originali, quindi bypassiamo la preparazione
             if chart_type != 'heatmap':
                 prepared_data = self._prepare_chart_data(df, x_col, y_col, chart_type)
                 
@@ -190,7 +115,6 @@ class ChartVisualizer:
                     st.warning("Nessun dato valido dopo la preparazione.")
                     return None
                 
-                # Usiamo i dati preparati per tutti gli altri grafici
                 df_final = prepared_data['df']
                 x_col_final = prepared_data['x_col']
                 y_col_final = prepared_data['y_col']
@@ -208,7 +132,7 @@ class ChartVisualizer:
             return None
 
     def _prepare_chart_data(self, df: pd.DataFrame, x_col: str, y_col: str, chart_type: str) -> Optional[Dict]:
-        """Prepara i dati in modo centralizzato per tutti i tipi di grafico."""
+        """Prepara i dati per tutti i tipi di grafici."""
         df_clean = df.copy()
         df_clean = df_clean.dropna(subset=[x_col])
         
@@ -250,7 +174,7 @@ class ChartVisualizer:
         return {'df': df_final, 'x_col': x_col_final, 'y_col': y_col_final}
 
     def _create_chart_by_type(self, df: pd.DataFrame, chart_type: str, x_col: str, y_col: str, original_x_col: str, z_col: str, agg_func: str) -> Optional[go.Figure]:
-        """Crea il grafico specifico usando dati già preparati e unificati."""
+        """Crea il grafico specifico usando dati già preparati."""
         fig = None
         
         n_unique_x = df[x_col].nunique()
@@ -337,7 +261,7 @@ class ChartVisualizer:
                     )
                 except Exception as e:
                     st.error(f"Impossibile creare la pivot table: {e}")
-                    fig = go.Figure() # Restituisce un grafico vuoto in caso di errore
+                    fig = go.Figure()
 
             else:
                 if len(df[x_col].unique()) <= 50 and len(df[y_col].unique()) <= 50:
@@ -386,14 +310,10 @@ class ChartVisualizer:
                     if fig:
                         st.plotly_chart(fig, width='stretch')
 
-### 3. CLASSE PER SPARK MLLIB
-# ==============================================================================
-
-# Aggiornamento per SparkMLProcessor per supportare algoritmi non-Spark
-
+# ============= CLASSE PER ALGORITMI DI ML =============
 class SparkMLProcessor:
     """
-    Classe per gestire l'esecuzione di algoritmi sia Spark MLlib che scikit-learn.
+    Classe per gestire l'esecuzione di algoritmi di ML.
     """
     def __init__(self, dataframe: pd.DataFrame, spark_session: SparkSession = None):
         self.df = dataframe.copy()
@@ -416,7 +336,7 @@ class SparkMLProcessor:
     def get_algorithm_requirements(self) -> Dict[str, Dict[str, Any]]:
         """Restituisce i requisiti per ogni algoritmo (sia Spark che scikit-learn)."""
         return {
-            # Spark MLlib - Clustering
+            #Clustering
             'K-Means': {
                 'type': 'clustering', 
                 'requires_target': False, 
@@ -432,7 +352,7 @@ class SparkMLProcessor:
                 'description': 'Variante di K-Means che usa divisione gerarchica'
             },
             
-            # Spark MLlib - Classification
+            #Classificazione
             'Random Forest Classifier': {
                 'type': 'classification', 
                 'requires_target': True, 
@@ -448,7 +368,7 @@ class SparkMLProcessor:
                 'description': 'Gradient Boosted Trees per classificazione'
             },
             
-            # Spark MLlib - Regression
+            #Regressione
             'Linear Regression': {
                 'type': 'regression', 
                 'requires_target': True, 
@@ -457,7 +377,7 @@ class SparkMLProcessor:
                 'description': 'Regressione lineare con regolarizzazione'
             },
             
-            # Scikit-learn - Clustering e Anomaly Detection
+            #Clustering e Anomaly Detection (Scikit-learn)
             'DBSCAN': {
                 'type': 'clustering', 
                 'requires_target': False, 
@@ -481,7 +401,6 @@ class SparkMLProcessor:
                 if self.spark is None or self.spark.sparkContext._jsc is None:
                     raise RuntimeError("Sessione Spark non attiva")
                 
-                # Test rapido della connessione
                 self.spark.sparkContext.getConf().get("spark.app.name")
                 return True
                 
@@ -490,7 +409,6 @@ class SparkMLProcessor:
                 
                 if attempt < self._connection_retries - 1:
                     try:
-                        # Tenta di ricreare la sessione
                         self.spark = st.session_state.spark_manager.get_spark_session()
                         if self.spark is None:
                             self.spark = st.session_state.spark_manager.restart_spark()
@@ -500,7 +418,7 @@ class SparkMLProcessor:
                     raise RuntimeError(f"Impossibile ripristinare la sessione Spark dopo {self._connection_retries} tentativi")
 
     def _prepare_spark_data_robust(self, features: List[str], target: Optional[str] = None) -> Tuple[SparkDataFrame, List[str]]:
-        """Versione ultra-robusta di preparazione dati Spark con FeatureHasher."""
+        """Versione robusta di preparazione dati Spark con FeatureHasher."""
         try:
             self._ensure_spark_session_active()
             
@@ -540,7 +458,7 @@ class SparkMLProcessor:
                 
                 if col_type == 'boolean':
                     df_clean = df_clean.withColumn(output_col, col(feature).cast(DoubleType()))
-                else: # si assume che sia numerico
+                else:
                     df_clean = df_clean.withColumn(output_col, 
                         when(col(feature).isNull() | isnan(col(feature)) | 
                              (col(feature) == float('inf')) | (col(feature) == float('-inf')), 
@@ -553,7 +471,7 @@ class SparkMLProcessor:
                 hasher = FeatureHasher(
                     inputCols=string_cols,
                     outputCol="hashed_features",
-                    numFeatures=256  # Un buon punto di partenza, puoi aumentarlo se necessario (es. 512, 1024)
+                    numFeatures=256
                 )
                 stages.append(hasher)
                 final_assembler_cols.append("hashed_features")
@@ -561,15 +479,13 @@ class SparkMLProcessor:
             if not final_assembler_cols:
                 raise ValueError("Nessuna feature valida dopo il preprocessing")
 
-            # 4. Assembla tutte le feature processate in un unico vettore
             assembler = VectorAssembler(
                 inputCols=final_assembler_cols,
                 outputCol="features",
-                handleInvalid="keep"  # 'keep' è più robusto di 'skip' o 'error'
+                handleInvalid="keep"
             )
             stages.append(assembler)
 
-            # 5. Crea ed esegui la pipeline
             pipeline = Pipeline(stages=stages)
             pipeline_model = pipeline.fit(df_clean)
             df_final = pipeline_model.transform(df_clean)
@@ -590,14 +506,11 @@ class SparkMLProcessor:
             raise ValueError(f"Errore preparazione dati Spark: {e}")
     
     def _prepare_spark_data(self, features: List[str], target: Optional[str] = None) -> Tuple[SparkDataFrame, List[str]]:
-        """Prepara i dati Spark con encoding e pulizia - versione sicura."""
+        """Prepara i dati Spark con encoding e pulizia."""
         try:
-            # Verifica sessione prima di iniziare
             self._ensure_spark_session_active()
             
-            # Crea Spark DataFrame con gestione errori
             if self.spark_df is None:
-                # Converti con chunks più piccoli per evitare problemi di memoria
                 chunk_size = min(10000, len(self.df))
                 if len(self.df) > chunk_size:
                     st.warning(f"Dataset grande ({len(self.df)} righe), usando campione di {chunk_size}")
@@ -606,24 +519,20 @@ class SparkMLProcessor:
                 else:
                     self.spark_df = self.spark.createDataFrame(self.df)
             
-            # Verifica che le colonne esistano
             spark_columns = self.spark_df.columns
             missing_features = [f for f in features if f not in spark_columns]
             if missing_features:
                 raise ValueError(f"Colonne mancanti: {missing_features}")
             
-            # Seleziona colonne necessarie e rimuovi valori nulli
             cols_needed = features + ([target] if target else [])
             df_clean = self.spark_df.select(*cols_needed).na.drop()
             
-            # Controlla che ci siano dati dopo la pulizia
             row_count = df_clean.count()
             if row_count == 0:
                 raise ValueError("Nessuna riga valida dopo pulizia")
             elif row_count < 10:
                 raise ValueError(f"Troppo poche righe ({row_count}) per ML")
             
-            # Encoding delle colonne categoriche
             stages = []
             feature_cols = []
             
@@ -649,13 +558,11 @@ class SparkMLProcessor:
             if not feature_cols:
                 raise ValueError("Nessuna feature valida dopo preprocessing")
             
-            # Applica le trasformazioni
             if stages:
                 pipeline = Pipeline(stages=stages)
                 pipeline_model = pipeline.fit(df_clean)
                 df_clean = pipeline_model.transform(df_clean)
             
-            # Assembla le features
             assembler = VectorAssembler(
                 inputCols=feature_cols,
                 outputCol="features",
@@ -664,7 +571,6 @@ class SparkMLProcessor:
             
             df_final = assembler.transform(df_clean)
             
-            # Verifica finale
             final_count = df_final.count()
             if final_count == 0:
                 raise ValueError("Nessuna riga dopo assemblaggio features")
@@ -672,7 +578,6 @@ class SparkMLProcessor:
             return df_final, feature_cols
             
         except Exception as e:
-            # Cleanup in caso di errore
             if hasattr(self, 'spark_df') and self.spark_df is not None:
                 try:
                     self.spark_df.unpersist()
@@ -696,20 +601,17 @@ class SparkMLProcessor:
             return {'error': f"Errore in {algorithm}: {e}", 'success': False}
 
     def _run_kmeans_optimized(self, df_prepared: SparkDataFrame, original_features: List[str]) -> Dict[str, Any]:
-        """Versione sicura di K-Means con gestione robusta degli errori."""
+        """Esegue K-Means in modo robusto."""
         try:
             self._ensure_spark_session_active()
             
-            # Persisti il DataFrame per performance
             df_prepared.cache()
             
-            # Verifica dati sufficienti
             total_rows = df_prepared.count()
             if total_rows < 4:
                 df_prepared.unpersist()
                 return {'error': f'Troppo poche righe ({total_rows}) per K-Means', 'success': False}
             
-            # Limita i valori di k
             max_k = min(10, total_rows // 2)
             k_values = list(range(2, max_k + 1))
             
@@ -734,14 +636,13 @@ class SparkMLProcessor:
                         featuresCol="features", 
                         predictionCol="prediction", 
                         seed=42,
-                        maxIter=20,  # Limita iterazioni
+                        maxIter=20,
                         tol=1e-4
                     )
                     
                     model = kmeans.fit(df_prepared)
                     predictions = model.transform(df_prepared)
                     
-                    # Usa campione per valutazione se dataset grande
                     if total_rows > 1000:
                         eval_sample = predictions.sample(fraction=0.1, seed=42)
                     else:
@@ -771,11 +672,9 @@ class SparkMLProcessor:
                 df_prepared.unpersist()
                 return {'error': 'K-Means fallito su tutti i k testati', 'success': False}
             
-            # Risultati finali - collect() sicuro
             try:
                 final_predictions = best_model.transform(df_prepared)
                 
-                # Limita righe per collect()
                 if total_rows > 5000:
                     sample_predictions = final_predictions.sample(fraction=5000/total_rows, seed=42)
                     labels_data = sample_predictions.select("prediction").collect()
@@ -789,7 +688,6 @@ class SparkMLProcessor:
                 df_prepared.unpersist()
                 return {'error': f'Errore raccolta risultati: {e}', 'success': False}
             
-            # Cleanup
             df_prepared.unpersist()
                         
             return {
@@ -802,7 +700,6 @@ class SparkMLProcessor:
             }
             
         except Exception as e:
-            # Cleanup in caso di errore
             try:
                 df_prepared.unpersist()
             except:
@@ -878,7 +775,7 @@ class SparkMLProcessor:
                     pass
 
     def _run_classification_optimized(self, algorithm: str, train_df: SparkDataFrame, test_df: SparkDataFrame) -> Dict[str, Any]:
-        """Esegue algoritmi di classificazione con ottimizzazione."""
+        """Esegue algoritmi di classificazione."""
         
         if algorithm == "Random Forest Classifier":
             model_class = RandomForestClassifier
@@ -893,7 +790,6 @@ class SparkMLProcessor:
                 .addGrid(model_class.maxDepth, [5, 10]) \
                 .build()
         
-        # Specifica esplicitamente le colonne
         base_model = model_class(
             featuresCol="features", 
             labelCol="label",
@@ -958,7 +854,7 @@ class SparkMLProcessor:
                 predictionCol="prediction", 
                 metricName="mse"
             )
-            mse = evaluator.evaluate(predictions) # Mean Squared Error
+            mse = evaluator.evaluate(predictions)
             
             test_size = test_df.count()
             if test_size > 1000:
@@ -1093,7 +989,7 @@ class SparkMLProcessor:
             return {'error': f"Errore in {algorithm}: {e}", 'success': False}
         
     def validate_ml_config(self, ml_config: Dict[str, Any]) -> Tuple[bool, str]:
-        """Valida la configurazione ML con controlli robusti."""
+        """Valida la configurazione ML."""
         algorithm = ml_config.get('algorithm')
         features = ml_config.get('features', [])
         target = ml_config.get('target')
@@ -1149,7 +1045,7 @@ class SparkMLProcessor:
     
     def execute_ml_config(self, ml_config: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Esegue una configurazione ML completa (Spark o scikit-learn).
+        Esegue una configurazione ML completa.
         """
         is_valid, error_msg = self.validate_ml_config(ml_config)
         if not is_valid:
@@ -1185,17 +1081,15 @@ class SparkMLProcessor:
         except Exception as e:
             return {'error': f"Errore nell'esecuzione di {algorithm}: {e}", 'success': False}
 
-### 4. CLASSE PER VISUALIZZAZIONE ML CON SPARK
-# ==============================================================================
-
+# ============= VISUALIZZAZIONE ALGORITMI DI ML ================
 class SparkMLVisualizer:
-    """Classe per visualizzare i risultati degli algoritmi Spark MLlib e scikit-learn."""
+    """Classe per visualizzare i risultati degli algoritmi di ML."""
     
     def __init__(self, ml_processor: SparkMLProcessor):
         self.ml_processor = ml_processor
 
     def display_ml_results(self, ml_results: List[Dict[str, Any]], ml_configs: List[Dict[str, Any]]):
-        """Visualizza tutti i risultati ML usando la logica unificata per Spark e scikit-learn."""
+        """Visualizza i risultati ML."""
         if not ml_results:
             st.info("Nessun algoritmo ML configurato")
             return
@@ -1211,7 +1105,6 @@ class SparkMLVisualizer:
         tab_names = []
         for i, cfg in enumerate(ml_configs):
             algorithm = cfg.get('algorithm', f'Algoritmo {i+1}')
-            # Aggiungi indicatore engine se disponibile
             engine_info = self._get_engine_indicator(algorithm)
             tab_names.append(f"{algorithm} {engine_info}")
 
@@ -1224,17 +1117,16 @@ class SparkMLVisualizer:
     def _get_engine_indicator(self, algorithm: str) -> str:
         """Restituisce un indicatore visivo per l'engine utilizzato."""
         spark_algorithms = [
-            'K-Means', 'Bisecting K-Means', 'Random Forest Classifier', 
-            'GBT Classifier', 'Linear Regression'
+            'K-Means', 'Random Forest Classifier', 'GBT Classifier', 'Linear Regression', 'Isolation Forest'
         ]
         
         if algorithm in spark_algorithms:
-            return "⚡"  # Spark
+            return "⚡"  #MlLib di Spark
         else:
-            return "🐍"  # Scikit-learn
+            return "🐍"  #Scikit-learn
     
     def visualize_results(self, results: Dict[str, Any], config: Dict[str, Any]):
-        """Visualizza i risultati ML con logica unificata per Spark e scikit-learn."""
+        """Visualizza i risultati ML."""
         if not results.get('success', False):
             st.error(f"❌ {results.get('error', 'Errore sconosciuto')}")
             return
@@ -1294,7 +1186,7 @@ class SparkMLVisualizer:
                     
                     for i, cluster in enumerate(unique_clusters):
                         if cluster == 'Noise':
-                            color_map[cluster] = '#808080'  # Grigio per noise
+                            color_map[cluster] = '#808080'
                         else:
                             color_map[cluster] = colors[i % len(colors)]
                 else:
@@ -1313,7 +1205,7 @@ class SparkMLVisualizer:
                 st.plotly_chart(fig, width='stretch')
     
     def _visualize_anomaly_detection(self, results: Dict, config: Dict):
-        """Visualizza risultati anomaly detection."""
+        """Visualizza risultati dell'anomaly detection."""
         st.metric("Anomalie Rilevate", results.get('n_anomalies', 'N/A'))
         
         if results['algorithm'] == 'Isolation Forest':
@@ -1332,32 +1224,27 @@ class SparkMLVisualizer:
             st.plotly_chart(fig, width='stretch', key="anomaly_isolation_forest")
     
     def _visualize_supervised(self, results: Dict):
-        """Visualizza risultati algoritmi supervisionati con metriche dettagliate."""
+        """Visualizza risultati algoritmi supervisionati con relative metriche."""
         is_classification = results.get('is_classification', False)
         
         if is_classification:
             metric_val = results.get('accuracy', 0)
             
-            # Calcola metriche aggiuntive
             from sklearn.metrics import precision_score, recall_score, f1_score, classification_report
             
             y_test = results['test_actual']
             y_pred = results['predictions']
             
-            # Metriche per classe
             precision = precision_score(y_test, y_pred, average=None, zero_division=0)
             recall = recall_score(y_test, y_pred, average=None, zero_division=0)
             f1 = f1_score(y_test, y_pred, average=None, zero_division=0)
             f1_avg = f1_score(y_test, y_pred, average='weighted', zero_division=0)
-            # Ottieni le etichette uniche
             unique_labels = sorted(list(set(y_test) | set(y_pred)))
             
-            # Crea metriche per visualizzazione
             col1, col2 = st.columns(2)
             col1.metric("Accuracy", f"{metric_val:.4f}")
             col2.metric("F1-Score", f"{f1_avg:.4f}")
             
-            # Tabella delle metriche per classe
             st.markdown("#### 📈 Metriche per Classe")
             
             metrics_df = pd.DataFrame({
@@ -1372,13 +1259,11 @@ class SparkMLVisualizer:
             
             cm = confusion_matrix(y_test, y_pred, labels=unique_labels)
             
-            # Crea etichette leggibili
             if len(unique_labels) == 2:
                 class_names = ['Classe 0 (Negativo)', 'Classe 1 (Positivo)']
             else:
                 class_names = [f'Classe {label}' for label in unique_labels]
             
-            # Crea la figura con Plotly
             fig = go.Figure(data=go.Heatmap(
                 z=cm,
                 x=class_names,
@@ -1398,7 +1283,7 @@ class SparkMLVisualizer:
                 height=500,
                 font=dict(size=12),
                 xaxis=dict(side='bottom'),
-                yaxis=dict(autorange='reversed')  # Per avere la classe 0 in alto
+                yaxis=dict(autorange='reversed')
             )
             
             algorithm = results.get('algorithm', 'classifier')
@@ -1441,8 +1326,7 @@ class SparkMLVisualizer:
             algorithm = results.get('algorithm', 'regressor')
             st.plotly_chart(fig, width='stretch', key=f"regression_scatter_{algorithm}")
 
-### 5. FUNZIONI DI SUPPORTO
-# ==============================================================================
+# ============= FUNZIONI AUSILIARIE ===============
 def normalize_query_for_comparison(query: str) -> str:
     """Normalizza una query per il confronto."""
     if not query: 
@@ -1476,28 +1360,11 @@ def is_hashable(series: pd.Series) -> bool:
     except TypeError:
         return False
 
-def find_best_columns_for_analysis(df: pd.DataFrame) -> Tuple[Optional[str], Optional[str], str]:
-    """Trova le migliori colonne per un'analisi automatica."""
-    categorical_cols = df.select_dtypes(include=['object', 'category']).columns
-    numerical_cols = df.select_dtypes(include=np.number).columns
-    
-    suitable_candidates = {col: df[col].nunique() 
-                         for col in categorical_cols 
-                         if is_hashable(df[col]) and 3 < df[col].nunique() < 50}
-    best_group_by = min(suitable_candidates, key=suitable_candidates.get) if suitable_candidates else None
-    
-    if not best_group_by: 
-        return None, None, 'count'
 
-    possible_agg_cols = [col for col in numerical_cols if col != best_group_by]
-    return (best_group_by, possible_agg_cols[0], 'sum') if possible_agg_cols else (best_group_by, 'count', 'count')
-
-
-### 6. FUNZIONE PRINCIPALE
-# ==============================================================================
+# ============= FUNZIONE PRINCIPALE =============
 def show_analytics_page():
     """
-    Funzione principale per visualizzare la pagina di analisi con supporto Spark MLlib.
+    Funzione principale per visualizzare la pagina di analisi.
     """
     dataset = st.session_state.get('last_query_result')
     if dataset is None or not isinstance(dataset, pd.DataFrame) or dataset.empty:
