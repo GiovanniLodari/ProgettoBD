@@ -1,9 +1,11 @@
 streamlit
-pandas 
+pandas
 pyspark==4.0.0
 plotly 
 seaborn 
 matplotlib
+numpy
+scipy
 setuptools
 streamlit-tree-select
 scikit-learn

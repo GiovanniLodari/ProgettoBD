@@ -13,44 +13,28 @@ import warnings
 import re
 
 from pyspark.sql import SparkSession, DataFrame as SparkDataFrame
-from pyspark.ml.feature import VectorAssembler, StandardScaler, StringIndexer, OneHotEncoder, FeatureHasher
-from pyspark.ml.clustering import KMeans, BisectingKMeans
+from pyspark.ml.feature import VectorAssembler, StringIndexer, FeatureHasher
+from pyspark.ml.clustering import KMeans
 from pyspark.ml.classification import RandomForestClassifier, GBTClassifier
 from pyspark.ml.regression import LinearRegression as SparkLinearRegression
 from pyspark.ml.evaluation import ClusteringEvaluator, MulticlassClassificationEvaluator, RegressionEvaluator
 from pyspark.ml import Pipeline
 from pyspark.ml.tuning import CrossValidator, ParamGridBuilder
-from pyspark.sql.functions import col, when, isnan, isnull, monotonically_increasing_id
+from pyspark.sql.functions import col, when, isnan
 from pyspark.sql.types import DoubleType
 
 from sklearn.ensemble import IsolationForest
 from sklearn.cluster import DBSCAN
 from sklearn.preprocessing import LabelEncoder
 from sklearn.preprocessing import StandardScaler as SklearnStandardScaler
-from sklearn.metrics import confusion_matrix
-
+from sklearn.metrics import confusion_matrix, silhouette_score
+from sklearn.metrics import precision_score, recall_score, f1_score
+from sklearn.metrics import r2_score, mean_absolute_error
 from utils.utils import get_twitter_query_templates
-
-try:
-    from scipy.signal import find_peaks
-    SCIPY_AVAILABLE = True
-except ImportError:
-    SCIPY_AVAILABLE = False
 
 warnings.filterwarnings('ignore')
 
-# ============= CLASSE DI ANALISI PRINCIPALE ================
-class GeneralAnalytics:
-    """
-    Classe helper per eseguire aggregazioni sui dati utilizzando Spark SQL.
-    """
-    def __init__(self, dataframe: pd.DataFrame, spark_session: SparkSession = None):
-        self.df = dataframe
-        self.spark = spark_session or SparkSession.getActiveSession()
-        if self.spark is None:
-            raise ValueError("Spark session non trovata. Assicurati che Spark sia inizializzato.")
-
-# ============= CLASSE PER VISUALIZZAZIONE DEI GRAFICI =============
+# ============= CLASSE PER VISUALIZZAZIONE DI GRAFICI =============
 class ChartVisualizer:
     """
     Classe per gestire la visualizzazione automatica dei grafici basata sui metadati JSON.
@@ -881,8 +865,6 @@ class SparkMLProcessor:
     
     def _run_dbscan_optimized(self, features: List[str]) -> Dict[str, Any]:
         """Esegue DBSCAN con ottimizzazione degli iperparametri."""
-        from sklearn.cluster import DBSCAN
-        from sklearn.metrics import silhouette_score
         
         X, _, _ = self._prepare_data_robust(features)
         
@@ -942,8 +924,7 @@ class SparkMLProcessor:
     
     def _run_isolation_forest_optimized(self, features: List[str]) -> Dict[str, Any]:
         """Esegue Isolation Forest ottimizzato."""
-        from sklearn.ensemble import IsolationForest
-        
+
         X, _, _ = self._prepare_data_robust(features)
         
         best_params = {}
@@ -1230,8 +1211,6 @@ class SparkMLVisualizer:
         if is_classification:
             metric_val = results.get('accuracy', 0)
             
-            from sklearn.metrics import precision_score, recall_score, f1_score, classification_report
-            
             y_test = results['test_actual']
             y_pred = results['predictions']
             
@@ -1295,7 +1274,6 @@ class SparkMLVisualizer:
             col1, col2 = st.columns(2)
             col1.metric("📉 MSE", f"{metric_val:.4f}")
             
-            from sklearn.metrics import r2_score, mean_absolute_error
             y_test = results['test_actual']
             y_pred = results['predictions']
             

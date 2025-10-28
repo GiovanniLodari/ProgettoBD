@@ -3,21 +3,20 @@ Pagina per query SQL.
 """
 
 import streamlit as st
-import streamlit.components.v1 as components
 import pandas as pd
-from src.analytics import QueryEngine
-from src.config import Config, DatabaseConfig
-from pyspark.sql import functions as F
-from pyspark.sql.types import *
 import logging
 import os, json
 import re
 import traceback
-from typing import Optional, Dict, Any, List, Tuple
+import time
+
+from pyspark.sql.types import *
+from typing import Optional, Dict, Any, List
 from utils.utils import get_twitter_query_templates, force_open_sidebar, force_close_sidebar
 from pages_logic.analytics_page import show_analytics_page
 
 logger = logging.getLogger(__name__)
+TEMP_VIEW_NAME = "disasters"
 
 class RobustDataConverter:
     """Classe per gestire conversioni robuste da Spark a Pandas."""
@@ -29,22 +28,16 @@ class RobustDataConverter:
         """Controlla se un tipo di dato è complesso (struct, array, map)"""
         return isinstance(data_type, (StructType, ArrayType, MapType))
 
-class EnhancedQueryEngine(QueryEngine):
-    """QueryEngine con gestione errori robusta"""
-    
+class EnhancedQueryEngine():
+    """QueryEngine con gestione errori."""
+
     def __init__(self):
         super().__init__()
         if not hasattr(self, 'query_history'):
             self.query_history = []
     
     def execute_custom_query_safe(self, query: str, limit_results: Optional[int] = None) -> Dict[str, Any]:
-        """
-        Esegue query con gestione errori robusta.
-        
-        Returns:
-            Dict con 'success', 'data', 'error', 'warning', 'stats'
-        """
-        import time
+        """Esegue query con gestione errori."""
         start_time = time.time()
         
         result = {
@@ -108,8 +101,7 @@ class EnhancedQueryEngine(QueryEngine):
             self._add_to_history(query, 0, False, str(e), execution_time)
             return result
     
-    def _add_to_history(self, query: str, row_count: int, success: bool = True, 
-                       error: Optional[str] = None, execution_time: Optional[float] = None):
+    def _add_to_history(self, query: str, row_count: int, success: bool = True, error: Optional[str] = None, execution_time: Optional[float] = None):
         """Aggiunge query alla cronologia"""
         history_entry = {
             'query': query.strip(),
@@ -195,7 +187,7 @@ def show_simplified_custom_query_page():
     query_engine = st.session_state.enhanced_query_engine
 
     try:
-        view_name = DatabaseConfig.TEMP_VIEW_NAME
+        view_name = TEMP_VIEW_NAME
         dataset.createOrReplaceTempView(view_name)
         
     except Exception as e:
@@ -226,10 +218,10 @@ def show_dataset_info_safe(dataset):
         with st.spinner("Caricamento informazioni dataset..."):
             if dataset is not None:
                 try:
-                    view_name = DatabaseConfig.TEMP_VIEW_NAME
+                    view_name = TEMP_VIEW_NAME
                 except NameError:
                     view_name = "N/A"
-                    st.warning("⚠️ `DatabaseConfig.TEMP_VIEW_NAME` non definita.")
+                    st.warning("⚠️ `TEMP_VIEW_NAME` non definita.")
                 
                 if 'row_count' not in st.session_state:
                     try:
@@ -461,7 +453,7 @@ def show_simplified_editor_tab(query_engine, dataset):
 
     
     st.markdown("### ✏️ Editor SQL")
-    default_query = f"SELECT * FROM {DatabaseConfig.TEMP_VIEW_NAME}"
+    default_query = f"SELECT * FROM {TEMP_VIEW_NAME}"
     
     if 'pending_query' in st.session_state:
         default_query = st.session_state.pending_query
@@ -474,7 +466,7 @@ def show_simplified_editor_tab(query_engine, dataset):
         value=default_query,
         height=150,
         key=text_area_key,
-        help=f"Scrivi la tua query SQL. Usa '{DatabaseConfig.TEMP_VIEW_NAME}' come nome della tabella."
+        help=f"Scrivi la tua query SQL. Usa '{TEMP_VIEW_NAME}' come nome della tabella."
     )
     
     col1, col2, col3, col4 = st.columns([1, 1, 1, 1])
@@ -668,7 +660,6 @@ def show_delete_confirmation_dialog(category: str, name: str):
                 except Exception as e:
                     st.error(f"❌ Errore durante l'eliminazione: {e}")
                 
-                import time
                 time.sleep(1)
                 st.rerun()
         
@@ -683,7 +674,7 @@ def show_delete_confirmation_dialog(category: str, name: str):
 
 
 def show_save_template_sidebar(query_text: str, mode: str = 'new', existing_data: Dict = None):
-    """Mostra form nella sidebar per salvare o modificare un template."""
+    """Mostra il form nella sidebar per salvare o modificare un template."""
     
     show_form = st.session_state.get('show_save_form', False)
     
@@ -876,7 +867,6 @@ def show_save_template_sidebar(query_text: str, mode: str = 'new', existing_data
                     else:
                         st.warning("⚠️ Impossibile determinare le colonne dalla query.")
                     
-                    # Pulsante rimozione
                     if st.button("🗑️ Rimuovi", key=f"sidebar_remove_chart_{i}"):
                         st.session_state.charts_config.pop(i)
                         st.rerun()
@@ -1265,7 +1255,6 @@ def show_delete_confirmation_dialog(category: str, name: str):
                 except Exception as e:
                     st.error(f"❌ Errore durante l'eliminazione: {e}")
                 
-                import time
                 time.sleep(1)
                 st.rerun()
         
@@ -1279,9 +1268,7 @@ def show_delete_confirmation_dialog(category: str, name: str):
     delete_confirmation_dialog()
 
 def get_query_columns(query: str, spark) -> list[str]:
-    """
-    Restituisce la lista di colonne da una query.
-    """
+    """Restituisce la lista di colonne da una query."""
     try:
         df = spark.sql(query)
         return df.columns
@@ -1311,7 +1298,7 @@ def show_error_suggestions(error: str, query: str):
     
     error_lower = error.lower()    
     if "table or view not found" in error_lower:
-        st.info(f"🔍 Assicurati di usare il nome tabella corretto: `{DatabaseConfig.TEMP_VIEW_NAME}`")    
+        st.info(f"🔍 Assicurati di usare il nome tabella corretto: `{TEMP_VIEW_NAME}`")    
     elif "column" in error_lower and "not found" in error_lower:
         st.info("🔍 Controlla che i nomi delle colonne siano corretti.")    
     elif "syntax error" in error_lower:

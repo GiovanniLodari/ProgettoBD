@@ -5,24 +5,22 @@ Applicazione principale per l'analisi dei disastri naturali
 
 import streamlit as st
 import sys
-import os
+import logging
 from pathlib import Path
 
 current_dir = Path(__file__).parent
 src_path = current_dir / "src"
 sys.path.insert(0, str(src_path))
 
-from src.config import Config
 from src.spark_manager import cleanup_spark
-import logging
 from pages_logic.home import main as home_main
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 st.set_page_config(
-    page_title=Config.PAGE_TITLE,
-    page_icon=Config.PAGE_ICON,
+    page_title="Analisi Disastri Naturali",
+    page_icon="🌪️",
     layout="centered"
 )
 

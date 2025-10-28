@@ -1,17 +1,12 @@
 """
 Utilità per integrazione Spark nell'app di analisi disastri naturali
 """
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any
 import streamlit as st
-from pyspark.sql.types import *
-from pyspark.sql import SparkSession, DataFrame
-from pyspark.sql import functions as F
-import pandas as pd
-import tempfile
 import os, sys
 import logging
-import shutil
-from src.config import Config, SparkConfig
+from pyspark.sql.types import *
+from pyspark.sql import SparkSession, DataFrame
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +48,7 @@ class SparkManager:
             num_cores = 14
 
             builder = SparkSession.builder \
-                .appName(Config.SPARK_APP_NAME) \
+                .appName("DisasterAnalysis") \
                 .master(f"local[{num_cores}]") \
                 .config("spark.driver.memory", "8g") \
                 .config("spark.executor.memory", "8g") \
@@ -67,11 +62,6 @@ class SparkManager:
                 .config("spark.memory.fraction", "0.8")
 
             self.spark = builder.getOrCreate()
-            
-            if dataset_size_mb:
-                memory_configs = SparkConfig.get_memory_settings(dataset_size_mb)
-                for key, value in memory_configs.items():
-                    builder = builder.config(key, value)
             
             try:
                 self.spark = builder.master("local[*]").getOrCreate()
@@ -91,9 +81,7 @@ class SparkManager:
         return SparkManager()
     
     def get_dataframe_stats(self, df: DataFrame) -> Dict[str, Any]:
-        """
-        Estrae statistiche di base da un DataFrame.
-        """
+        """Estrae informazioni di base da un DataFrame."""
         if df is None:
             return {'error': 'DataFrame is None'}
             
@@ -132,23 +120,3 @@ def should_use_spark(file_size_mb, num_files, uploaded_files=None):
         return file_size_mb > 500 or num_files > 5 or any(f.size > 100*1024*1024 for f in uploaded_files)
     else:
         return file_size_mb > 100
-
-@st.cache_data
-def detect_data_schema(sample_df):
-    """Rileva schema dati per ottimizzazioni"""
-    schema_info = {}
-    
-    for col in sample_df.columns:
-        col_type = str(sample_df[col].dtype)
-        unique_count = sample_df[col].nunique()
-        null_pct = sample_df[col].isnull().sum() / len(sample_df)
-        
-        schema_info[col] = {
-            'type': col_type,
-            'unique_values': unique_count,
-            'null_percentage': null_pct,
-            'is_categorical': unique_count < len(sample_df) * 0.05,
-            'potential_date': 'date' in col.lower() or 'time' in col.lower()
-        }
-    
-    return schema_info
