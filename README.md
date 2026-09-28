@@ -1,26 +1,26 @@
 # Disaster Analytics — Spark Edition
 
-Applicazione **Streamlit + PySpark** per esplorare grandi raccolte di tweet sui disastri naturali (per esempio l'uragano Harvey del 2017). Carica i dati JSON, li interroga con SQL, li visualizza e applica algoritmi di machine learning distribuiti.
+**Streamlit + PySpark** application to explore large collections of tweets about natural disasters (for example Hurricane Harvey, 2017). It loads JSON data, queries it with SQL, visualizes it and applies distributed machine-learning algorithms.
 
-Progetto per il corso di Basi di Dati.
+University project for the Databases course. The interface and comments are in Italian.
 
-## Funzionalità
+## Features
 
-- **Caricamento dati**: file JSON o JSON Lines, anche compressi `.gz`, letti con uno schema Twitter generale (`schema_generale.json`) e, se serve, con inferenza automatica.
-- **Editor SQL**: query Spark SQL sulla vista `disasters`, con modelli di query salvabili (`custom_query.json`), cronologia ed esportazione.
-- **Grafici**: barre, linee, dispersione e altri, configurabili sul risultato di ogni query (Plotly).
-- **Machine learning su Spark**:
+- **Data loading**: JSON or JSON Lines files, also compressed as `.gz`, read with a general Twitter schema (`schema_generale.json`) and, when needed, automatic inference.
+- **SQL editor**: Spark SQL queries on the `disasters` view, with saveable query templates (`custom_query.json`), history and export.
+- **Charts**: configurable on the result of each query (Plotly).
+- **Machine learning on Spark**:
   - clustering: K-Means, DBSCAN;
-  - classificazione e regressione supervisionata;
-  - rilevamento di anomalie: Isolation Forest.
+  - supervised classification and regression;
+  - anomaly detection: Isolation Forest.
 
-## Requisiti
+## Requirements
 
 - Python 3.10+
-- Java 17 (per PySpark)
-- Su Windows: Hadoop `winutils` in `%USERPROFILE%\hadoop-3.3.6` (vedi sotto)
+- Java 17 (for PySpark)
+- On Windows: Hadoop `winutils` in `%USERPROFILE%\hadoop-3.3.6` (see below)
 
-## Installazione
+## Installation
 
 ```bash
 python -m venv .venv
@@ -28,35 +28,35 @@ source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-## Avvio
+## Running
 
 ```bash
 streamlit run app.py
 ```
 
-Su Windows si può usare `run_app.bat`, che imposta Java, Spark e Hadoop, crea il virtualenv `.venv`, avvia lo Spark History Server e lancia Streamlit. Il file va adattato ai percorsi della propria macchina (`JAVA_HOME`, `SPARK_HOME`, `HADOOP_HOME`).
+On Windows you can use `run_app.bat`, which sets up Java, Spark and Hadoop, creates the `.venv` virtualenv, starts the Spark History Server and launches Streamlit. The file must be adapted to the paths on your machine (`JAVA_HOME`, `SPARK_HOME`, `HADOOP_HOME`).
 
-I dati non sono nel repository: caricali dall'interfaccia. Le cartelle `data/` e i file `.parquet` sono ignorati da git.
+The data is not in the repository: load it from the interface. The `data/` folders and `.parquet` files are ignored by git.
 
-## Struttura
+## Structure
 
-| Percorso | Contenuto |
+| Path | Content |
 |---|---|
-| `app.py` | Punto d'ingresso Streamlit |
-| `pages_logic/` | Pagine: home, analisi con grafici e ML, editor di query |
-| `src/data_loader.py` | Lettura dei file e gestione dello schema |
-| `src/spark_manager.py` | Creazione e configurazione della sessione Spark |
-| `utils/` | Script per ispezionare gli schemi, convertire in Parquet e riparare JSON |
-| `schema_generale.json` | Schema Twitter unificato usato per leggere i dati |
-| `custom_query.json` | Query salvate |
+| `app.py` | Streamlit entry point |
+| `pages_logic/` | Pages: home, analysis with charts and ML, query editor |
+| `src/data_loader.py` | File reading and schema handling |
+| `src/spark_manager.py` | Spark session creation and configuration |
+| `utils/` | Scripts to inspect schemas, convert to Parquet and repair JSON |
+| `schema_generale.json` | Unified Twitter schema used to read the data |
+| `custom_query.json` | Saved queries |
 
-## Utility
+## Utilities
 
 ```bash
-python utils/read_schemas.py                     # ispeziona i file in data/File_compressi e li converte in Parquet
-python utils/json_fixer.py input.json output.json   # ripara un JSON malformato
+python utils/read_schemas.py                        # inspects the files in data/File_compressi and converts them to Parquet
+python utils/json_fixer.py input.json output.json   # repairs a malformed JSON
 ```
 
-## Note
+## Notes
 
-La sessione Spark è configurata per una macchina con molta memoria (driver da 8 GB): riduci `spark.driver.memory` in `src/spark_manager.py` se serve.
+The Spark session is configured for a machine with plenty of memory (8 GB driver): lower `spark.driver.memory` in `src/spark_manager.py` if needed.
