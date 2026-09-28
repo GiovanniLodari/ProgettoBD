@@ -5,9 +5,10 @@ import logging
 import pandas as pd
 
 # --- Configurazione ---
-INPUT_DIR = r"C:\Users\giova\Desktop\ProgettoBD\data\File_compressi"
-OUTPUT_PARQUET_DIR = r"C:\Users\giova\Desktop\ProgettoBD\data\File_convertiti_in_parquet"
-REPORT_FILE = r"C:\Users\giova\Desktop\ProgettoBD\schema_report.csv"
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+INPUT_DIR = os.path.join(PROJECT_ROOT, "data", "File_compressi")
+OUTPUT_PARQUET_DIR = os.path.join(PROJECT_ROOT, "data", "File_convertiti_in_parquet")
+REPORT_FILE = os.path.join(PROJECT_ROOT, "schema_report.csv")
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 

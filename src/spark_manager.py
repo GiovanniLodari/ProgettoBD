@@ -3,7 +3,7 @@ Utilità per integrazione Spark nell'app di analisi disastri naturali
 """
 from typing import Dict, Any
 import streamlit as st
-import os, sys
+import os, sys, tempfile
 import logging
 from pyspark.sql.types import *
 from pyspark.sql import SparkSession, DataFrame
@@ -34,7 +34,7 @@ class SparkManager:
                 logger.error(f"Errore nell'impostazione di HADOOP_HOME: {e}")
                 st.warning("Potrebbero verificarsi errori di Hadoop/winutils su Windows.")
 
-            log_dir_base = "C:\\tmp"
+            log_dir_base = tempfile.gettempdir()
             event_log_dir = os.path.join(log_dir_base, "spark-events")
 
             try:
@@ -45,7 +45,7 @@ class SparkManager:
                 st.error(f"Errore di permessi: non è stato possibile creare la cartella {event_log_dir}")
                 return None
             
-            num_cores = 14
+            num_cores = os.cpu_count() or 4
 
             builder = SparkSession.builder \
                 .appName("DisasterAnalysis") \
@@ -57,7 +57,7 @@ class SparkManager:
                 .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer") \
                 .config("spark.sql.execution.arrow.pyspark.enabled", "true") \
                 .config("spark.eventLog.enabled", "true") \
-                .config("spark.eventLog.dir", "/tmp/spark-events") \
+                .config("spark.eventLog.dir", "file:///" + event_log_dir.replace(os.sep, "/").lstrip("/")) \
                 .config("spark.sql.shuffle.partitions", num_cores * 3) \
                 .config("spark.memory.fraction", "0.8")
 

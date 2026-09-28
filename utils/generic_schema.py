@@ -85,8 +85,8 @@ def main():
     Funzione principale che orchestra il processo.
     """
     try:
-        desktop_path = os.path.join(os.path.join(os.path.expanduser('~')), 'Desktop')
-        schemas_dir = os.path.join(desktop_path, 'schemas_output')
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        schemas_dir = os.path.join(project_root, 'schemas_output')
 
         if not os.path.isdir(schemas_dir):
             print(f"ERRORE: La cartella '{schemas_dir}' non è stata trovata.")
@@ -117,7 +117,7 @@ def main():
             )
             print(f"{i}. Unito con successo lo schema da: {filename}")
 
-        output_path = os.path.join(desktop_path, 'schema_generale.json')
+        output_path = os.path.join(project_root, 'schema_generale.json')
         with open(output_path, 'w', encoding='utf-8') as f:
             json.dump(general_schema, f, indent=4)
             

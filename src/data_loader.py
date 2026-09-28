@@ -25,6 +25,9 @@ from pyspark.sql.types import (
 
 logger = logging.getLogger(__name__)
 
+# schema_generale.json sta nella radice del progetto, accanto a app.py
+DEFAULT_SCHEMA_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "schema_generale.json")
+
 def _json_to_spark_type(json_type):
     """Funzione che converte ricorsivamente un tipo dal formato JSON a quello PySpark."""
     
@@ -66,13 +69,14 @@ class SchemaManager:
     _schema_cache = None
 
     @staticmethod
-    def get_twitter_schema(json_path=r"C:\Users\giova\Desktop\ProgettoBD\schema_generale.json"):
+    def get_twitter_schema(json_path=DEFAULT_SCHEMA_PATH):
         """
         Carica lo schema Twitter da un file JSON e lo converte in uno schema PySpark.
-        
+
         Args:
-            json_path (str): Il percorso del file schema_generale.json.
-        
+            json_path (str): Il percorso del file schema_generale.json
+                (di default quello nella radice del progetto).
+
         Returns:
             StructType: Lo schema PySpark completo e pronto all'uso.
         """

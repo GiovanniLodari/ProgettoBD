@@ -69,8 +69,9 @@ def fix_json(file_input, file_output, expected_keys=None):
 
 # La funzione main() rimane la stessa
 def main():
-    input_path = r"C:\Users\giova\Desktop\prova\170826213907_hurricane_harvey_2017_20170903_vol-2.json"
-    output_path = r"C:\Users\giova\Desktop\170826213907_hurricane_harvey_2017_20170903_vol-2_CORRETTO.json"
+    if len(sys.argv) != 3:
+        sys.exit("Uso: python utils/json_fixer.py <input.json> <output_corretto.json>")
+    input_path, output_path = sys.argv[1], sys.argv[2]
     expected_keys = None # Imposta le chiavi se necessario, altrimenti lascialo None
 
     fix_json(input_path, output_path, expected_keys)

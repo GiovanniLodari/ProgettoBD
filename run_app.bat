@@ -6,12 +6,9 @@ REM ==================================================
 echo 🌪️ Avvio applicazione Streamlit
 echo ================================================================
 
-REM ===== Deattiva ambiente virtuale =====
-call "%VENV_PATH%\Scripts\deactivate.bat"
-
 REM ===== Configura Java =====
 REM Modifica questo percorso con quello della tua Java 17.0.12
-set "JAVA_HOME=C:\Program Files\Java\jdk-17"
+if not defined JAVA_HOME set "JAVA_HOME=C:\Program Files\Java\jdk-17"
 set "PATH=%JAVA_HOME%\bin;%PATH%"
 
 REM Verifica Java
@@ -62,8 +59,8 @@ set "PATH=%PATH%;%HADOOP_HOME%\bin"
 echo [INFO] Aggiunto HADOOP alla variabile d'ambiente PATH
 
 REM ===== Ambiente virtuale =====
-set "VENV_PATH=%USERPROFILE%\Desktop\ProgettoBD\venv"
-if not exist "%VENV_PATH%\bin\activate.bat" (
+set "VENV_PATH=%~dp0.venv"
+if not exist "%VENV_PATH%\Scripts\activate.bat" (
     echo [INFO] Creazione ambiente virtuale Python...
     "%PYTHON_PATH%" -m venv "%VENV_PATH%"
     if errorlevel 1 (
